@@ -1,0 +1,13 @@
+# Place the yt-dlp binary here for Vercel / serverless deployments.
+#
+# Download from: https://github.com/yt-dlp/yt-dlp/releases/latest
+#
+# Linux / macOS:
+#   curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+#     -o bin/yt-dlp && chmod +x bin/yt-dlp
+#
+# Windows:
+#   Download yt-dlp.exe and place it here as bin/yt-dlp.exe
+#   Then update YTDLP_PATH=./bin/yt-dlp.exe in vercel.json
+
+This file is a placeholder. The actual binary is NOT committed to version control.

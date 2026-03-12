@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>FetchWave — YouTube Video Downloader</title>
+  <meta name="description" content="FetchWave lets you fetch and download YouTube videos in any quality — fast, clean, free."/>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="/css/style.css"/>
+</head>
+<body>
+
+  <!-- ── NOISE OVERLAY ── -->
+  <div class="noise"></div>
+
+  <!-- ── BACKGROUND ORBS ── -->
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <!-- ── HEADER ── -->
+  <header class="header">
+    <div class="logo">
+      <span class="logo-icon">⌁</span>
+      <span class="logo-text">FetchWave</span>
+    </div>
+    <nav class="nav-pills">
+      <a href="#how">How it works</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+  </header>
+
+  <!-- ── HERO ── -->
+  <main>
+    <section class="hero">
+      <div class="hero-badge">
+        <span class="badge-dot"></span>
+        Free · No signup · No limits
+      </div>
+      <h1 class="hero-title">
+        Download YouTube<br/>
+        <span class="gradient-text">at any quality.</span>
+      </h1>
+      <p class="hero-sub">
+        Paste a link. Pick your quality. Ride the wave.
+      </p>
+
+      <!-- ── INPUT FORM ── -->
+      <div class="input-card" id="inputCard">
+        <div class="input-row">
+          <div class="input-wrap">
+            <span class="input-icon">⌁</span>
+            <input
+              type="url"
+              id="urlInput"
+              class="url-input"
+              placeholder="https://youtube.com/watch?v=..."
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button class="clear-btn" id="clearBtn" title="Clear" aria-label="Clear input">✕</button>
+          </div>
+          <button class="fetch-btn" id="fetchBtn">
+            <span class="fetch-btn-text">Fetch Video</span>
+            <span class="fetch-btn-arrow">→</span>
+          </button>
+        </div>
+
+        <!-- ── ERROR ── -->
+        <div class="error-banner" id="errorBanner" hidden>
+          <span class="error-icon">⚠</span>
+          <span id="errorMsg"></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── LOADER ── -->
+    <section class="loader-section" id="loaderSection" hidden>
+      <div class="wave-loader">
+        <span></span><span></span><span></span><span></span><span></span>
+      </div>
+      <p class="loader-text">Fetching video info…</p>
+    </section>
+
+    <!-- ── RESULTS ── -->
+    <section class="results-section" id="resultsSection" hidden>
+      <!-- Video meta card -->
+      <div class="video-meta-card" id="videoMeta">
+        <img src="" alt="" id="metaThumb" class="meta-thumb"/>
+        <div class="meta-info">
+          <p class="meta-label">Now downloading</p>
+          <h2 class="meta-title" id="metaTitle"></h2>
+          <div class="meta-chips">
+            <span class="chip" id="metaDuration"></span>
+            <span class="chip" id="metaChannel"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Quality grid -->
+      <div class="quality-header">
+        <h3>Available formats</h3>
+        <span class="quality-count" id="qualityCount"></span>
+      </div>
+      <div class="quality-grid" id="qualityGrid"></div>
+
+      <!-- Reset -->
+      <button class="reset-btn" id="resetBtn">⟵ Try another video</button>
+    </section>
+
+    <!-- ── HOW IT WORKS ── -->
+    <section class="how-section" id="how">
+      <h2 class="section-title">How it works</h2>
+      <div class="steps-grid">
+        <div class="step-card">
+          <div class="step-num">01</div>
+          <h4>Paste the link</h4>
+          <p>Copy any YouTube URL and paste it into the input above.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">02</div>
+          <h4>Fetch formats</h4>
+          <p>We query the video's available streams in real time.</p>
+        </div>
+        <div class="step-card">
+          <div class="step-num">03</div>
+          <h4>Download</h4>
+          <p>Pick your preferred quality and hit download. Done.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── FAQ ── -->
+    <section class="faq-section" id="faq">
+      <h2 class="section-title">FAQ</h2>
+      <div class="faq-list">
+        <details class="faq-item">
+          <summary>Is this free?</summary>
+          <p>Yes — completely free, no account required.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What formats are supported?</summary>
+          <p>MP4 (video+audio), WebM, and MP3 audio-only streams, depending on what YouTube provides.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Is downloading YouTube videos legal?</summary>
+          <p>Downloading for personal, offline viewing of content you have rights to is generally permitted. Redistributing copyrighted content is not. Always respect copyright law and YouTube's Terms of Service.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Why does the highest quality show separately?</summary>
+          <p>YouTube's 1080p+ streams are audio-only or video-only. We badge the best combined stream and the highest raw stream separately so you always know what you're getting.</p>
+        </details>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── FOOTER ── -->
+  <footer class="footer">
+    <span class="logo-text small">FetchWave</span>
+    <p>Built for personal use. Respect copyright &amp; YouTube's ToS.</p>
+  </footer>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
