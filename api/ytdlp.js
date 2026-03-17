@@ -57,12 +57,14 @@ async function info(req, res) {
 
     const allFormats = [...combined, ...adaptive];
 
+    // Define allowed quality options (MP4 only)
+    const allowedQualities = ['144p', '360p', '720p', '1080p', '1440p'];
+
     const formats = allFormats
       .filter(f => f.url)
       .map((f, i) => {
-        const ext = f.mimeType?.includes('webm') ? 'webm'
-                  : f.mimeType?.includes('mp4')  ? 'mp4'
-                  : 'mp4';
+        // Force MP4 format only
+        const ext = 'mp4';
 
         const quality = f.qualityLabel
           || (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : 'audio');
@@ -73,12 +75,19 @@ async function info(req, res) {
           quality,
           resolution: f.qualityLabel || null,
           fps:        f.fps || null,
-          vcodec:     f._hasVideo ? (f.mimeType?.includes('webm') ? 'vp9' : 'h264') : 'none',
+          vcodec:     f._hasVideo ? 'h264' : 'none',
           acodec:     f._hasAudio ? 'aac' : 'none',
           abr:        f.bitrate ? Math.round(f.bitrate / 1000) : null,
           filesize:   f.contentLength ? parseInt(f.contentLength) : null,
           isBest:     false,
         };
+      })
+      .filter(f => {
+        // Only include MP4 formats with allowed quality labels
+        if (f.ext !== 'mp4') return false;
+        if (!f.quality) return false;
+        // Check if quality matches one of the allowed options
+        return allowedQualities.some(q => f.quality.includes(q));
       });
 
     // Sort: combined first, then by height descending
@@ -141,7 +150,8 @@ async function download(req, res) {
 
     if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
 
-    const ext      = fmt.mimeType?.includes('webm') ? 'webm' : 'mp4';
+    // Force MP4 format only
+    const ext      = 'mp4';
     const title    = (data.title || 'fetchwave').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
     const filename = `${title}.${ext}`;
 
