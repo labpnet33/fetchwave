@@ -199,9 +199,13 @@ async function handleDownload(e) {
 
   try {
     const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`;
+    
+    // Create a temporary link and trigger download
     const a = document.createElement('a');
     a.href = dlUrl;
-    a.download = '';
+    // Note: 'download' attribute might not work across origins after redirect, 
+    // but the API usually handles the filename in Content-Disposition.
+    a.target = '_blank'; 
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

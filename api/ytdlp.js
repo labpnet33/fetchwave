@@ -63,8 +63,8 @@ async function info(req, res) {
     const formats = allFormats
       .filter(f => f.url)
       .map((f, i) => {
-        // Force MP4 format only
-        const ext = 'mp4';
+        const isMp4 = f.mimeType?.includes('video/mp4') || f.mimeType?.includes('audio/mp4');
+        const ext = isMp4 ? 'mp4' : (f.mimeType?.includes('webm') ? 'webm' : 'mp4');
 
         const quality = f.qualityLabel
           || (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : 'audio');
@@ -150,39 +150,10 @@ async function download(req, res) {
 
     if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
 
-    // Force MP4 format only
-    const ext      = 'mp4';
-    const title    = (data.title || 'fetchwave').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
-    const filename = `${title}.${ext}`;
-
-    // Stream the file through our server directly to the browser
-    const videoStream = await axios.get(fmt.url, {
-      responseType: 'stream',
-      timeout: 0,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.youtube.com/',
-      },
-    });
-
-    // Set download headers
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', fmt.mimeType || 'video/mp4');
-    if (fmt.contentLength) {
-      res.setHeader('Content-Length', fmt.contentLength);
-    }
-
-    // Pipe video stream directly to client
-    videoStream.data.pipe(res);
-
-    // Handle errors during streaming
-    videoStream.data.on('error', (err) => {
-      console.error('[/api/download] stream error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'Stream failed.' });
-    });
-
-    // If client disconnects, destroy the stream
-    req.on('close', () => videoStream.data.destroy());
+    // Redirect to the direct download URL provided by the API
+    // This is more reliable than streaming through the server, which often results in 
+    // Content-Type mismatches or stream errors.
+    return res.redirect(fmt.url);
 
   } catch (err) {
     console.error('[/api/download]', err.message);
