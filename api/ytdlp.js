@@ -150,14 +150,43 @@ async function download(req, res) {
 
     if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
 
-    // Redirect to the direct download URL provided by the API
-    // This is more reliable than streaming through the server, which often results in 
-    // Content-Type mismatches or stream errors.
-    return res.redirect(fmt.url);
+    const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
+    const isMp4    = fmt.mimeType?.includes('video/mp4') || fmt.mimeType?.includes('audio/mp4');
+    const ext      = isMp4 ? 'mp4' : (fmt.mimeType?.includes('webm') ? 'webm' : 'mp4');
+    const filename = `${title}.${ext}`;
+
+    // Use axios to get the stream from the direct URL
+    const videoStream = await axios.get(fmt.url, {
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://www.youtube.com/',
+      },
+    });
+
+    // Explicitly set headers to force download as video/mp4
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', isMp4 ? 'video/mp4' : (fmt.mimeType || 'video/mp4'));
+    
+    if (fmt.contentLength) {
+      res.setHeader('Content-Length', fmt.contentLength);
+    }
+
+    // Pipe the stream directly to the response
+    videoStream.data.pipe(res);
+
+    videoStream.data.on('error', (err) => {
+      console.error('[/api/download] Stream error:', err.message);
+      if (!res.headersSent) {
+        res.status(500).send('Download failed during streaming.');
+      }
+    });
 
   } catch (err) {
     console.error('[/api/download]', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Download failed: ' + err.message });
+    }
   }
 }
 module.exports = { info, download };
