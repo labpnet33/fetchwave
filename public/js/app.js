@@ -200,11 +200,19 @@ async function handleDownload(e) {
   try {
     const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`;
     
-    // Trigger download using window.location.assign for better reliability with streaming headers
-    window.location.assign(dlUrl);
-
-    btn.innerHTML = `<span class="dl-btn-icon">✓</span> Download started`;
-    setTimeout(() => { btn.disabled = false; btn.innerHTML = origHTML; }, 3000);
+    // Trigger download using a hidden link to avoid replacing the current window
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    
+    // Give it a moment to start before removing
+    setTimeout(() => {
+      document.body.removeChild(a);
+      btn.innerHTML = `<span class="dl-btn-icon">✓</span> Download started`;
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = origHTML; }, 3000);
+    }, 1000);
 
   } catch (err) {
     btn.disabled  = false;

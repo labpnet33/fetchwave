@@ -41,14 +41,12 @@ async function info(req, res) {
       return res.status(400).json({ error: data.message || 'Failed to fetch video.' });
     }
 
-    // Combined streams (video + audio) e.g. 360p
     const combined = (data.formats || []).map(f => ({
       ...f,
       _hasVideo: true,
       _hasAudio: true,
     }));
 
-    // Adaptive streams — video only or audio only (720p, 1080p, 4K etc.)
     const adaptive = (data.adaptiveFormats || []).map(f => ({
       ...f,
       _hasVideo: f.mimeType?.startsWith('video'),
@@ -56,8 +54,6 @@ async function info(req, res) {
     }));
 
     const allFormats = [...combined, ...adaptive];
-
-    // Define allowed quality options (MP4 only)
     const allowedQualities = ['144p', '360p', '720p', '1080p', '1440p'];
 
     const formats = allFormats
@@ -65,9 +61,7 @@ async function info(req, res) {
       .map((f, i) => {
         const isMp4 = f.mimeType?.includes('video/mp4') || f.mimeType?.includes('audio/mp4');
         const ext = isMp4 ? 'mp4' : (f.mimeType?.includes('webm') ? 'webm' : 'mp4');
-
-        const quality = f.qualityLabel
-          || (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : 'audio');
+        const quality = f.qualityLabel || (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : 'audio');
 
         return {
           formatId:   f.itag?.toString() || i.toString(),
@@ -83,14 +77,11 @@ async function info(req, res) {
         };
       })
       .filter(f => {
-        // Only include MP4 formats with allowed quality labels
         if (f.ext !== 'mp4') return false;
         if (!f.quality) return false;
-        // Check if quality matches one of the allowed options
         return allowedQualities.some(q => f.quality.includes(q));
       });
 
-    // Sort: combined first, then by height descending
     formats.sort((a, b) => {
       const aIsCombined = a.vcodec !== 'none' && a.acodec !== 'none';
       const bIsCombined = b.vcodec !== 'none' && b.acodec !== 'none';
@@ -101,12 +92,8 @@ async function info(req, res) {
       return bH - aH;
     });
 
-    // Mark best as highest resolution combined, or highest overall
     if (formats.length > 0) formats[0].isBest = true;
-
-    if (formats.length === 0) {
-      return res.status(400).json({ error: 'No downloadable formats found.' });
-    }
+    if (formats.length === 0) return res.status(400).json({ error: 'No downloadable formats found.' });
 
     return res.json({
       title:     data.title,
@@ -135,7 +122,6 @@ async function download(req, res) {
     const videoId = extractVideoId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL.' });
 
-    // Fetch video metadata from RapidAPI
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
@@ -149,64 +135,61 @@ async function download(req, res) {
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
     const fmt        = allFormats.find(f => f.itag?.toString() === formatId);
 
-    if (!fmt?.url) {
-      return res.status(404).json({ error: 'Format not found.' });
-    }
+    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
 
     const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
     const isMp4    = fmt.mimeType?.includes('video/mp4') || fmt.mimeType?.includes('audio/mp4');
     const ext      = isMp4 ? 'mp4' : (fmt.mimeType?.includes('webm') ? 'webm' : 'mp4');
     const filename = `${title}.${ext}`;
 
-    // Set response headers BEFORE attempting the download
+    // Set standard headers for download
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', isMp4 ? 'video/mp4' : (fmt.mimeType || 'video/mp4'));
+    res.setHeader('Content-Type', isMp4 ? 'video/mp4' : (fmt.mimeType || 'application/octet-stream'));
     
     if (fmt.contentLength) {
       res.setHeader('Content-Length', fmt.contentLength);
     }
 
-    // Use axios to get the stream from the direct URL with proper headers
-    try {
-      const videoStream = await axios.get(fmt.url, {
-        responseType: 'stream',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-          'Referer': 'https://www.youtube.com/',
-          'Accept-Encoding': 'gzip, deflate',
-        },
-        timeout: 30000,
-      });
+    // Set additional headers to prevent caching and ensure streaming
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
 
-      // Pipe the stream directly to the response
-      videoStream.data.pipe(res);
+    // Fetch stream from the direct URL
+    const videoStream = await axios.get(fmt.url, {
+      responseType: 'stream',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.youtube.com/',
+        'Accept': '*/*',
+        'Connection': 'keep-alive'
+      },
+      timeout: 60000, // Increase timeout for slow connections
+    });
 
-      // Handle stream errors
-      videoStream.data.on('error', (err) => {
-        console.error('[/api/download] Stream error:', err.message);
-        if (!res.headersSent) {
-          res.status(500).json({ error: 'Download failed during streaming.' });
-        } else {
-          res.end();
-        }
-      });
+    // Pipe with error handling
+    videoStream.data.pipe(res);
 
-      res.on('error', (err) => {
-        console.error('[/api/download] Response error:', err.message);
-      });
-
-    } catch (streamErr) {
-      console.error('[/api/download] Stream fetch error:', streamErr.message);
+    videoStream.data.on('error', (err) => {
+      console.error('[/api/download] Stream error:', err.message);
       if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to fetch download stream: ' + streamErr.message });
+        res.status(500).end(); // Silent fail to avoid partial corrupted JSON
       } else {
         res.end();
       }
-    }
+    });
+
+    req.on('close', () => {
+      // Clean up if user cancels the download
+      if (videoStream.data) {
+        videoStream.data.destroy();
+      }
+    });
 
   } catch (err) {
     console.error('[/api/download]', err.message);
     if (!res.headersSent) {
+      // If we haven't sent headers, we can still send a JSON error
       res.status(500).json({ error: 'Download failed: ' + err.message });
     } else {
       res.end();
