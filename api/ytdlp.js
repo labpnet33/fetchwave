@@ -1,5 +1,9 @@
 /**
  * FetchWave — YT-API (RapidAPI) backend
+ * 
+ * FIX: This version uses a direct REDIRECT to the YouTube CDN URL.
+ * This is the most reliable way to avoid ERR_INVALID_RESPONSE and 403 errors,
+ * as it lets the browser handle the large video stream directly.
  */
 const axios = require('axios');
 
@@ -122,6 +126,7 @@ async function download(req, res) {
     const videoId = extractVideoId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL.' });
 
+    // Fetch fresh download link from RapidAPI
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
@@ -135,64 +140,22 @@ async function download(req, res) {
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
     const fmt        = allFormats.find(f => f.itag?.toString() === formatId);
 
-    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
-
-    const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
-    const isMp4    = fmt.mimeType?.includes('video/mp4') || fmt.mimeType?.includes('audio/mp4');
-    const ext      = isMp4 ? 'mp4' : (fmt.mimeType?.includes('webm') ? 'webm' : 'mp4');
-    const filename = `${title}.${ext}`;
-
-    // Set standard headers for download
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', isMp4 ? 'video/mp4' : (fmt.mimeType || 'application/octet-stream'));
-    
-    if (fmt.contentLength) {
-      res.setHeader('Content-Length', fmt.contentLength);
+    if (!fmt?.url) {
+      return res.status(404).json({ error: 'Download link not found.' });
     }
 
-    // Set additional headers to prevent caching and ensure streaming
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Pragma', 'no-cache');
-    res.setHeader('Expires', '0');
-
-    // Fetch stream from the direct URL
-    const videoStream = await axios.get(fmt.url, {
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.youtube.com/',
-        'Accept': '*/*',
-        'Connection': 'keep-alive'
-      },
-      timeout: 60000, // Increase timeout for slow connections
-    });
-
-    // Pipe with error handling
-    videoStream.data.pipe(res);
-
-    videoStream.data.on('error', (err) => {
-      console.error('[/api/download] Stream error:', err.message);
-      if (!res.headersSent) {
-        res.status(500).end(); // Silent fail to avoid partial corrupted JSON
-      } else {
-        res.end();
-      }
-    });
-
-    req.on('close', () => {
-      // Clean up if user cancels the download
-      if (videoStream.data) {
-        videoStream.data.destroy();
-      }
-    });
+    /**
+     * DEFINITIVE FIX:
+     * Instead of streaming through our server (which fails with ERR_INVALID_RESPONSE),
+     * we redirect the browser directly to the YouTube CDN URL.
+     * This is the fastest and most reliable way to download.
+     */
+    res.redirect(fmt.url);
 
   } catch (err) {
-    console.error('[/api/download]', err.message);
+    console.error('[/api/download] Error:', err.message);
     if (!res.headersSent) {
-      // If we haven't sent headers, we can still send a JSON error
       res.status(500).json({ error: 'Download failed: ' + err.message });
-    } else {
-      res.end();
     }
   }
 }
