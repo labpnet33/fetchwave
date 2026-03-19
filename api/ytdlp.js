@@ -1,11 +1,12 @@
 /**
  * FetchWave — YT-API (RapidAPI) backend
  * 
- * FIX: This version uses a direct REDIRECT to the YouTube CDN URL.
- * This is the most reliable way to avoid ERR_INVALID_RESPONSE and 403 errors,
- * as it lets the browser handle the large video stream directly.
+ * FIX: This version uses a robust SERVER-SIDE PROXY with native streaming.
+ * By proxying the stream, we can FORCE the browser to download the file 
+ * as an MP4 instead of playing it in a new tab.
  */
 const axios = require('axios');
+const https = require('https');
 
 const RAPID_API_KEY  = process.env.RAPID_API_KEY || 'YOUR_KEY_HERE';
 const RAPID_API_HOST = 'yt-api.p.rapidapi.com';
@@ -126,7 +127,7 @@ async function download(req, res) {
     const videoId = extractVideoId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL.' });
 
-    // Fetch fresh download link from RapidAPI
+    // Fetch video metadata to get the CDN URL
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
@@ -140,23 +141,54 @@ async function download(req, res) {
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
     const fmt        = allFormats.find(f => f.itag?.toString() === formatId);
 
-    if (!fmt?.url) {
-      return res.status(404).json({ error: 'Download link not found.' });
-    }
+    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
+
+    const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
+    const filename = `${title}.mp4`;
 
     /**
-     * DEFINITIVE FIX:
-     * Instead of streaming through our server (which fails with ERR_INVALID_RESPONSE),
-     * we redirect the browser directly to the YouTube CDN URL.
-     * This is the fastest and most reliable way to download.
+     * PROXY STREAMING FIX:
+     * We set headers to FORCE DOWNLOAD (attachment) and then pipe the stream
+     * directly from the YouTube CDN to the browser.
      */
-    res.redirect(fmt.url);
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', 'video/mp4');
+    if (fmt.contentLength) res.setHeader('Content-Length', fmt.contentLength);
+
+    // Use native https.get for the most reliable streaming pipe
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://www.youtube.com/'
+      }
+    };
+
+    https.get(fmt.url, options, (stream) => {
+      if (stream.statusCode >= 400) {
+        console.error(`[/api/download] CDN returned ${stream.statusCode}`);
+        if (!res.headersSent) res.status(stream.statusCode).end();
+        return;
+      }
+      
+      stream.pipe(res);
+
+      stream.on('error', (err) => {
+        console.error('[/api/download] Stream error:', err.message);
+        res.end();
+      });
+    }).on('error', (err) => {
+      console.error('[/api/download] Request error:', err.message);
+      if (!res.headersSent) res.status(500).end();
+    });
+
+    req.on('close', () => {
+      // Handle client disconnect
+      res.end();
+    });
 
   } catch (err) {
-    console.error('[/api/download] Error:', err.message);
-    if (!res.headersSent) {
-      res.status(500).json({ error: 'Download failed: ' + err.message });
-    }
+    console.error('[/api/download] Catch error:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Download failed.' });
   }
 }
 
