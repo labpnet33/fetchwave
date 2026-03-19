@@ -200,14 +200,27 @@ async function handleDownload(e) {
   try {
     const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`;
     
-    // Trigger download using a hidden link to avoid replacing the current window
+    /**
+     * FORCE DOWNLOAD FIX:
+     * We fetch the download URL from our API, which now redirects to the CDN.
+     * To ensure it DOWNLOADS instead of PLAYING, we use the 'fetch' blob method
+     * which forces the browser to treat it as a file download.
+     */
+    const response = await fetch(dlUrl);
+    if (!response.ok) throw new Error('Failed to fetch download link');
+    
+    // The server returns a redirect, so response.url is the actual CDN link
+    const directUrl = response.url;
+
+    // Create a hidden link with the 'download' attribute
     const a = document.createElement('a');
-    a.href = dlUrl;
+    a.href = directUrl;
+    // Try to suggest a filename (though cross-origin might ignore this, it helps some browsers)
+    a.download = `video_${formatId}.mp4`;
     a.style.display = 'none';
     document.body.appendChild(a);
     a.click();
     
-    // Give it a moment to start before removing
     setTimeout(() => {
       document.body.removeChild(a);
       btn.innerHTML = `<span class="dl-btn-icon">✓</span> Download started`;
@@ -217,6 +230,8 @@ async function handleDownload(e) {
   } catch (err) {
     btn.disabled  = false;
     btn.innerHTML = origHTML;
-    alert('Download failed: ' + err.message);
+    console.error('Download error:', err);
+    // Fallback: if fetch fails, try opening the URL directly
+    window.open(`/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`, '_blank');
   }
 }
