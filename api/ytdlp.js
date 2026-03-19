@@ -135,6 +135,7 @@ async function download(req, res) {
     const videoId = extractVideoId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL.' });
 
+    // Fetch video metadata from RapidAPI
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
@@ -148,23 +149,16 @@ async function download(req, res) {
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
     const fmt        = allFormats.find(f => f.itag?.toString() === formatId);
 
-    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
+    if (!fmt?.url) {
+      return res.status(404).json({ error: 'Format not found.' });
+    }
 
     const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
     const isMp4    = fmt.mimeType?.includes('video/mp4') || fmt.mimeType?.includes('audio/mp4');
     const ext      = isMp4 ? 'mp4' : (fmt.mimeType?.includes('webm') ? 'webm' : 'mp4');
     const filename = `${title}.${ext}`;
 
-    // Use axios to get the stream from the direct URL
-    const videoStream = await axios.get(fmt.url, {
-      responseType: 'stream',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Referer': 'https://www.youtube.com/',
-      },
-    });
-
-    // Explicitly set headers to force download as video/mp4
+    // Set response headers BEFORE attempting the download
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', isMp4 ? 'video/mp4' : (fmt.mimeType || 'video/mp4'));
     
@@ -172,21 +166,52 @@ async function download(req, res) {
       res.setHeader('Content-Length', fmt.contentLength);
     }
 
-    // Pipe the stream directly to the response
-    videoStream.data.pipe(res);
+    // Use axios to get the stream from the direct URL with proper headers
+    try {
+      const videoStream = await axios.get(fmt.url, {
+        responseType: 'stream',
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+          'Referer': 'https://www.youtube.com/',
+          'Accept-Encoding': 'gzip, deflate',
+        },
+        timeout: 30000,
+      });
 
-    videoStream.data.on('error', (err) => {
-      console.error('[/api/download] Stream error:', err.message);
+      // Pipe the stream directly to the response
+      videoStream.data.pipe(res);
+
+      // Handle stream errors
+      videoStream.data.on('error', (err) => {
+        console.error('[/api/download] Stream error:', err.message);
+        if (!res.headersSent) {
+          res.status(500).json({ error: 'Download failed during streaming.' });
+        } else {
+          res.end();
+        }
+      });
+
+      res.on('error', (err) => {
+        console.error('[/api/download] Response error:', err.message);
+      });
+
+    } catch (streamErr) {
+      console.error('[/api/download] Stream fetch error:', streamErr.message);
       if (!res.headersSent) {
-        res.status(500).send('Download failed during streaming.');
+        res.status(500).json({ error: 'Failed to fetch download stream: ' + streamErr.message });
+      } else {
+        res.end();
       }
-    });
+    }
 
   } catch (err) {
     console.error('[/api/download]', err.message);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Download failed: ' + err.message });
+    } else {
+      res.end();
     }
   }
 }
+
 module.exports = { info, download };
