@@ -1,9 +1,9 @@
 /**
  * FetchWave — YT-API (RapidAPI) backend
  * 
- * FIX: This version uses a robust SERVER-SIDE PROXY with native streaming.
- * By proxying the stream, we can FORCE the browser to download the file 
- * as an MP4 instead of playing it in a new tab.
+ * FIX: This version prioritizes formats that have BOTH Video and Audio.
+ * High quality (720p, 1080p) is often stored separately on YouTube.
+ * We'll filter to show the best available combined formats first.
  */
 const axios = require('axios');
 const https = require('https');
@@ -46,6 +46,7 @@ async function info(req, res) {
       return res.status(400).json({ error: data.message || 'Failed to fetch video.' });
     }
 
+    // Process formats to identify video/audio content
     const combined = (data.formats || []).map(f => ({
       ...f,
       _hasVideo: true,
@@ -59,6 +60,8 @@ async function info(req, res) {
     }));
 
     const allFormats = [...combined, ...adaptive];
+    
+    // Define allowed quality options (MP4 only)
     const allowedQualities = ['144p', '360p', '720p', '1080p', '1440p'];
 
     const formats = allFormats
@@ -82,23 +85,44 @@ async function info(req, res) {
         };
       })
       .filter(f => {
+        // Only include MP4 formats with allowed quality labels
         if (f.ext !== 'mp4') return false;
         if (!f.quality) return false;
-        return allowedQualities.some(q => f.quality.includes(q));
+        
+        // Check if quality matches one of the allowed options
+        const matchesQuality = allowedQualities.some(q => f.quality.includes(q));
+        if (!matchesQuality) return false;
+
+        return true;
       });
 
+    /**
+     * SORTING STRATEGY:
+     * 1. Prioritize formats that have BOTH video and audio (combined)
+     * 2. Then sort by resolution (height) descending
+     */
     formats.sort((a, b) => {
       const aIsCombined = a.vcodec !== 'none' && a.acodec !== 'none';
       const bIsCombined = b.vcodec !== 'none' && b.acodec !== 'none';
+      
+      // Combined formats always come before video-only formats
       if (aIsCombined && !bIsCombined) return -1;
       if (!aIsCombined && bIsCombined) return 1;
+      
+      // If both are the same type, sort by quality (resolution)
       const aH = parseInt(a.quality) || 0;
       const bH = parseInt(b.quality) || 0;
       return bH - aH;
     });
 
-    if (formats.length > 0) formats[0].isBest = true;
-    if (formats.length === 0) return res.status(400).json({ error: 'No downloadable formats found.' });
+    // Mark the best combined format as "Best"
+    if (formats.length > 0) {
+        formats[0].isBest = true;
+    }
+
+    if (formats.length === 0) {
+      return res.status(400).json({ error: 'No downloadable formats found.' });
+    }
 
     return res.json({
       title:     data.title,
@@ -127,7 +151,6 @@ async function download(req, res) {
     const videoId = extractVideoId(url);
     if (!videoId) return res.status(400).json({ error: 'Invalid YouTube URL.' });
 
-    // Fetch video metadata to get the CDN URL
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
@@ -146,16 +169,10 @@ async function download(req, res) {
     const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
     const filename = `${title}.mp4`;
 
-    /**
-     * PROXY STREAMING FIX:
-     * We set headers to FORCE DOWNLOAD (attachment) and then pipe the stream
-     * directly from the YouTube CDN to the browser.
-     */
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.setHeader('Content-Type', 'video/mp4');
     if (fmt.contentLength) res.setHeader('Content-Length', fmt.contentLength);
 
-    // Use native https.get for the most reliable streaming pipe
     const options = {
       headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -165,13 +182,10 @@ async function download(req, res) {
 
     https.get(fmt.url, options, (stream) => {
       if (stream.statusCode >= 400) {
-        console.error(`[/api/download] CDN returned ${stream.statusCode}`);
         if (!res.headersSent) res.status(stream.statusCode).end();
         return;
       }
-      
       stream.pipe(res);
-
       stream.on('error', (err) => {
         console.error('[/api/download] Stream error:', err.message);
         res.end();
@@ -182,7 +196,6 @@ async function download(req, res) {
     });
 
     req.on('close', () => {
-      // Handle client disconnect
       res.end();
     });
 
