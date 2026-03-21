@@ -24,6 +24,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 /* ── API ROUTES ── */
 app.post('/api/info',     ytdlp.info);
 app.get('/api/download',  ytdlp.download);
+app.post('/api/bulk-download', ytdlp.bulkDownload);
 
 /* ── CATCH-ALL: serve index.html for any non-API route ── */
 app.get('*', (req, res) => {

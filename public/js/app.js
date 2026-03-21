@@ -1,5 +1,8 @@
 /**
  * FetchWave — Frontend App
+ * Features:
+ * - Single video download with MP4 (multiple qualities) and MP3 (high-quality audio)
+ * - YouTube playlist support with individual and bulk downloads
  */
 
 const urlInput       = document.getElementById('urlInput');
@@ -9,6 +12,7 @@ const errorBanner    = document.getElementById('errorBanner');
 const errorMsg       = document.getElementById('errorMsg');
 const loaderSection  = document.getElementById('loaderSection');
 const resultsSection = document.getElementById('resultsSection');
+const playlistSection = document.getElementById('playlistSection');
 const heroSection    = document.querySelector('.hero');
 const qualityGrid    = document.getElementById('qualityGrid');
 const qualityCount   = document.getElementById('qualityCount');
@@ -17,10 +21,18 @@ const metaThumb      = document.getElementById('metaThumb');
 const metaDuration   = document.getElementById('metaDuration');
 const metaChannel    = document.getElementById('metaChannel');
 const resetBtn       = document.getElementById('resetBtn');
+const playlistTitle  = document.getElementById('playlistTitle');
+const playlistCount  = document.getElementById('playlistCount');
+const playlistVideos = document.getElementById('playlistVideos');
+const playlistResetBtn = document.getElementById('playlistResetBtn');
+
+let currentPlaylistData = null;
+let selectedPlaylistVideos = new Set();
 
 /* ── INIT: ensure clean state on load ── */
 loaderSection.style.display  = 'none';
 resultsSection.style.display = 'none';
+playlistSection.style.display = 'none';
 errorBanner.style.display    = 'none';
 
 /* ── HELPERS ── */
@@ -36,9 +48,19 @@ function extractVideoId(url) {
   return null;
 }
 
+function isPlaylistUrl(url) {
+  try {
+    const u = new URL(url.trim());
+    if (u.hostname.includes('youtube.com')) {
+      return u.searchParams.has('list');
+    }
+  } catch (_) {}
+  return false;
+}
+
 function validateInput(url) {
   if (!url.trim()) return 'Please enter a YouTube URL.';
-  if (!extractVideoId(url)) return 'Could not parse a video ID. Please use a standard YouTube link.';
+  if (!extractVideoId(url) && !isPlaylistUrl(url)) return 'Could not parse a video or playlist ID. Please use a standard YouTube link.';
   return null;
 }
 
@@ -54,8 +76,9 @@ function hideError() {
 function setView(view) {
   loaderSection.style.display  = view === 'loading' ? 'flex'  : 'none';
   resultsSection.style.display = view === 'results' ? 'block' : 'none';
-  heroSection.style.display    = view === 'results' ? 'none'  : '';
-  if (view === 'loading' || view === 'results') hideError();
+  playlistSection.style.display = view === 'playlist' ? 'block' : 'none';
+  heroSection.style.display    = (view === 'results' || view === 'playlist') ? 'none'  : '';
+  if (view === 'loading' || view === 'results' || view === 'playlist') hideError();
 }
 
 function formatBytes(bytes) {
@@ -100,6 +123,17 @@ resetBtn.addEventListener('click', () => {
   window.scrollTo({ top: 0, behavior: 'smooth' });
 });
 
+playlistResetBtn.addEventListener('click', () => {
+  urlInput.value = '';
+  clearBtn.classList.remove('visible');
+  hideError();
+  setView('input');
+  playlistVideos.innerHTML = '';
+  selectedPlaylistVideos.clear();
+  currentPlaylistData = null;
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
 /* ── FETCH ── */
 fetchBtn.addEventListener('click', async () => {
   const url = urlInput.value.trim();
@@ -120,8 +154,13 @@ fetchBtn.addEventListener('click', async () => {
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || 'Failed to fetch video.');
 
-    renderResults(data);
-    setView('results');
+    if (data.type === 'playlist') {
+      renderPlaylist(data, url);
+      setView('playlist');
+    } else {
+      renderResults(data);
+      setView('results');
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
 
   } catch (err) {
@@ -133,7 +172,7 @@ fetchBtn.addEventListener('click', async () => {
   }
 });
 
-/* ── RENDER RESULTS ── */
+/* ── RENDER RESULTS (Single Video) ── */
 function renderResults(data) {
   metaTitle.textContent    = data.title     || 'Unknown Title';
   metaThumb.src            = data.thumbnail || '';
@@ -144,11 +183,25 @@ function renderResults(data) {
   const formats = data.formats || [];
   qualityCount.textContent = `${formats.length} format${formats.length !== 1 ? 's' : ''}`;
   qualityGrid.innerHTML = '';
-  formats.forEach((fmt, i) => qualityGrid.appendChild(buildQualityCard(fmt, i)));
+  formats.forEach((fmt, i) => qualityGrid.appendChild(buildQualityCard(fmt, i, data)));
 }
 
-/* ── BUILD QUALITY CARD ── */
-function buildQualityCard(fmt, index) {
+/* ── RENDER PLAYLIST ── */
+function renderPlaylist(data, url) {
+  currentPlaylistData = { ...data, url };
+  selectedPlaylistVideos.clear();
+
+  playlistTitle.textContent = data.playlistTitle || 'Playlist';
+  playlistCount.textContent = `${data.videoCount} video${data.videoCount !== 1 ? 's' : ''}`;
+  playlistVideos.innerHTML = '';
+
+  data.videos.forEach((video, i) => {
+    playlistVideos.appendChild(buildPlaylistVideoCard(video, i));
+  });
+}
+
+/* ── BUILD QUALITY CARD (Single Video) ── */
+function buildQualityCard(fmt, index, videoData) {
   const card = document.createElement('div');
   card.className = 'quality-card' + (fmt.isBest ? ' best' : '');
   card.style.animationDelay = `${index * 0.05}s`;
@@ -177,6 +230,7 @@ function buildQualityCard(fmt, index) {
     </div>
     <button class="dl-btn"
       data-format-id="${fmt.formatId}"
+      data-format="${fmt.ext}"
       data-url="${encodeURIComponent(urlInput.value.trim())}">
       <span class="dl-btn-icon">↓</span>
       Download
@@ -187,10 +241,59 @@ function buildQualityCard(fmt, index) {
   return card;
 }
 
-/* ── DOWNLOAD ── */
+/* ── BUILD PLAYLIST VIDEO CARD ── */
+function buildPlaylistVideoCard(video, index) {
+  const card = document.createElement('div');
+  card.className = 'playlist-video-card';
+  card.style.animationDelay = `${index * 0.05}s`;
+
+  const durationStr = formatDuration(video.duration) || '—';
+
+  card.innerHTML = `
+    <div class="playlist-video-checkbox">
+      <input type="checkbox" class="video-checkbox" data-video-id="${video.videoId}" />
+    </div>
+    <img src="${video.thumbnail || ''}" alt="${video.title}" class="playlist-video-thumb"/>
+    <div class="playlist-video-info">
+      <h4 class="playlist-video-title">${video.title}</h4>
+      <p class="playlist-video-meta">${video.channel || 'Unknown'} • ${durationStr}</p>
+    </div>
+    <div class="playlist-video-actions">
+      <button class="dl-btn-small" data-action="mp4" data-video-id="${video.videoId}">
+        <span class="dl-btn-icon">↓</span> MP4
+      </button>
+      <button class="dl-btn-small" data-action="mp3" data-video-id="${video.videoId}">
+        <span class="dl-btn-icon">↓</span> MP3
+      </button>
+    </div>
+  `;
+
+  // Checkbox toggle
+  const checkbox = card.querySelector('.video-checkbox');
+  checkbox.addEventListener('change', (e) => {
+    if (e.target.checked) {
+      selectedPlaylistVideos.add(video.videoId);
+    } else {
+      selectedPlaylistVideos.delete(video.videoId);
+    }
+  });
+
+  // Individual download buttons
+  card.querySelectorAll('.dl-btn-small').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const action = e.currentTarget.dataset.action;
+      handlePlaylistVideoDownload(video.videoId, action);
+    });
+  });
+
+  return card;
+}
+
+/* ── DOWNLOAD (Single Video) ── */
 async function handleDownload(e) {
   const btn      = e.currentTarget;
   const formatId = btn.dataset.formatId;
+  const format   = btn.dataset.format;
   const videoUrl = decodeURIComponent(btn.dataset.url);
   const origHTML = btn.innerHTML;
 
@@ -198,14 +301,8 @@ async function handleDownload(e) {
   btn.innerHTML = `<span class="dl-btn-icon">⏳</span> Preparing…`;
 
   try {
-    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`;
+    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}`;
     
-    /**
-     * PROXY DOWNLOAD FIX:
-     * We use a hidden <a> link to trigger the download from our server proxy.
-     * Our server now sends 'Content-Disposition: attachment', which FORCES
-     * the browser to download instead of playing.
-     */
     const a = document.createElement('a');
     a.href = dlUrl;
     a.style.display = 'none';
@@ -222,6 +319,109 @@ async function handleDownload(e) {
     btn.disabled  = false;
     btn.innerHTML = origHTML;
     console.error('Download error:', err);
-    window.open(`/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}`, '_blank');
+    window.open(`/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}`, '_blank');
   }
 }
+
+/* ── DOWNLOAD PLAYLIST VIDEO (Individual) ── */
+async function handlePlaylistVideoDownload(videoId, format) {
+  // Find the video in current playlist
+  const video = currentPlaylistData.videos.find(v => v.videoId === videoId);
+  if (!video) return;
+
+  // Create a temporary URL for this video
+  const videoUrl = `https://youtube.com/watch?v=${videoId}`;
+  
+  try {
+    const res = await fetch('/api/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: videoUrl })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error);
+
+    // Find the best format for the requested type
+    let selectedFormat = null;
+    if (format === 'mp3') {
+      selectedFormat = data.formats.find(f => f.ext === 'mp3');
+    } else {
+      selectedFormat = data.formats.find(f => f.ext === 'mp4' && f.quality === '720p') || 
+                      data.formats.find(f => f.ext === 'mp4');
+    }
+
+    if (!selectedFormat) throw new Error('No suitable format found');
+
+    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(selectedFormat.formatId)}&format=${format}`;
+    
+    const a = document.createElement('a');
+    a.href = dlUrl;
+    a.style.display = 'none';
+    document.body.appendChild(a);
+    a.click();
+    
+    setTimeout(() => {
+      document.body.removeChild(a);
+    }, 1000);
+
+  } catch (err) {
+    console.error('Playlist video download error:', err);
+    showError(`Failed to download ${video.title}`);
+  }
+}
+
+/* ── BULK DOWNLOAD PLAYLIST ── */
+async function bulkDownloadPlaylist(format) {
+  if (selectedPlaylistVideos.size === 0) {
+    showError('Please select at least one video to download.');
+    return;
+  }
+
+  const videoIds = Array.from(selectedPlaylistVideos);
+  const bulkBtn = document.querySelector(`[data-bulk-action="${format}"]`);
+  const origHTML = bulkBtn.innerHTML;
+
+  bulkBtn.disabled = true;
+  bulkBtn.innerHTML = `<span class="dl-btn-icon">⏳</span> Preparing…`;
+
+  try {
+    const res = await fetch('/api/bulk-download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videoIds, format })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error);
+
+    // Download each file
+    for (const download of data.downloads) {
+      const a = document.createElement('a');
+      a.href = download.url;
+      a.download = `${download.title}.${format}`;
+      a.style.display = 'none';
+      document.body.appendChild(a);
+      a.click();
+      
+      setTimeout(() => {
+        document.body.removeChild(a);
+      }, 500);
+    }
+
+    bulkBtn.innerHTML = `<span class="dl-btn-icon">✓</span> Downloads started`;
+    setTimeout(() => { bulkBtn.disabled = false; bulkBtn.innerHTML = origHTML; }, 3000);
+
+  } catch (err) {
+    bulkBtn.disabled = false;
+    bulkBtn.innerHTML = origHTML;
+    console.error('Bulk download error:', err);
+    showError(err.message || 'Bulk download failed.');
+  }
+}
+
+// Attach bulk download handlers (will be added to HTML)
+document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-bulk-action]')) {
+    const format = e.target.closest('[data-bulk-action]').dataset.bulkAction;
+    bulkDownloadPlaylist(format);
+  }
+});

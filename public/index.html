@@ -3,8 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>FetchWave — YouTube Video Downloader</title>
-  <meta name="description" content="FetchWave lets you fetch and download YouTube videos in any quality — fast, clean, free."/>
+  <title>FetchWave — YouTube Video & Audio Downloader</title>
+  <meta name="description" content="FetchWave lets you fetch and download YouTube videos in any quality and high-quality MP3 audio — fast, clean, free."/>
   <link rel="preconnect" href="https://fonts.googleapis.com"/>
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
@@ -36,10 +36,10 @@
       </div>
       <h1 class="hero-title">
         Download YouTube<br/>
-        <span class="gradient-text">at any quality.</span>
+        <span class="gradient-text">videos & audio.</span>
       </h1>
       <p class="hero-sub">
-        Paste a link. Pick your quality. Ride the wave.
+        Paste a link. Pick your quality. Download MP4 video or MP3 audio. Playlists supported.
       </p>
 
       <div class="input-card" id="inputCard">
@@ -50,7 +50,7 @@
               type="url"
               id="urlInput"
               class="url-input"
-              placeholder="https://youtube.com/watch?v=..."
+              placeholder="https://youtube.com/watch?v=... or playlist URL"
               autocomplete="off"
               spellcheck="false"
             />
@@ -75,6 +75,7 @@
       <p class="loader-text">Fetching video info…</p>
     </section>
 
+    <!-- Single Video Results -->
     <section class="results-section" id="resultsSection" style="display:none">
       <div class="video-meta-card" id="videoMeta">
         <img src="" alt="" id="metaThumb" class="meta-thumb"/>
@@ -97,23 +98,51 @@
       <button class="reset-btn" id="resetBtn">⟵ Try another video</button>
     </section>
 
+    <!-- Playlist Results -->
+    <section class="playlist-section" id="playlistSection" style="display:none">
+      <div class="playlist-header-card">
+        <div class="playlist-header-info">
+          <p class="playlist-label">Playlist</p>
+          <h2 class="playlist-title" id="playlistTitle"></h2>
+          <span class="playlist-count" id="playlistCount"></span>
+        </div>
+      </div>
+
+      <div class="playlist-actions">
+        <button class="bulk-dl-btn" data-bulk-action="mp4">
+          <span class="dl-btn-icon">↓</span> Download All as MP4
+        </button>
+        <button class="bulk-dl-btn" data-bulk-action="mp3">
+          <span class="dl-btn-icon">↓</span> Download All as MP3
+        </button>
+      </div>
+
+      <div class="playlist-videos-header">
+        <h3>Videos in playlist</h3>
+        <p class="playlist-videos-hint">Select videos and use bulk download, or click individual download buttons.</p>
+      </div>
+      <div class="playlist-videos" id="playlistVideos"></div>
+
+      <button class="reset-btn" id="playlistResetBtn">⟵ Try another playlist</button>
+    </section>
+
     <section class="how-section" id="how">
       <h2 class="section-title">How it works</h2>
       <div class="steps-grid">
         <div class="step-card">
           <div class="step-num">01</div>
           <h4>Paste the link</h4>
-          <p>Copy any YouTube URL and paste it into the input above.</p>
+          <p>Copy any YouTube video or playlist URL and paste it into the input above.</p>
         </div>
         <div class="step-card">
           <div class="step-num">02</div>
           <h4>Fetch formats</h4>
-          <p>We query the video's available streams in real time.</p>
+          <p>We query the video's available streams in real time. For playlists, we list all videos.</p>
         </div>
         <div class="step-card">
           <div class="step-num">03</div>
           <h4>Download</h4>
-          <p>Pick your preferred quality and hit download. Done.</p>
+          <p>Pick your preferred quality (MP4 video or MP3 audio) and hit download. Done.</p>
         </div>
       </div>
     </section>
@@ -127,7 +156,11 @@
         </details>
         <details class="faq-item">
           <summary>What formats are supported?</summary>
-          <p>MP4, WebM, and audio-only streams depending on what YouTube provides.</p>
+          <p>MP4 video (144p, 360p, 720p, 1080p, 1440p) and high-quality MP3 audio.</p>
+        </details>
+        <details class="faq-item">
+          <summary>Can I download playlists?</summary>
+          <p>Yes! Paste a YouTube playlist URL and you can download individual videos or all videos at once in MP4 or MP3 format.</p>
         </details>
         <details class="faq-item">
           <summary>Is downloading YouTube videos legal?</summary>
@@ -136,6 +169,10 @@
         <details class="faq-item">
           <summary>Why does the highest quality show separately?</summary>
           <p>YouTube's 1080p+ streams are sometimes audio-only or video-only. We badge the best combined stream so you always know what you're getting.</p>
+        </details>
+        <details class="faq-item">
+          <summary>What is the MP3 quality?</summary>
+          <p>We provide the highest-quality audio stream available from YouTube, typically 128-256 kbps depending on the video source.</p>
         </details>
       </div>
     </section>
