@@ -79,24 +79,59 @@ function normalizeThumbnail(thumb) {
   return '';
 }
 
+function looksLikeYoutubeVideoId(s) {
+  return typeof s === 'string' && /^[a-zA-Z0-9_-]{11}$/.test(s);
+}
+
+/** Last resort: find an 11-char video id nested in API objects */
+function deepFindVideoId(obj, depth = 0) {
+  if (depth > 12 || obj == null || typeof obj !== 'object') return null;
+  const v = obj.videoId;
+  if (looksLikeYoutubeVideoId(v)) return v;
+  for (const val of Object.values(obj)) {
+    const r = deepFindVideoId(val, depth + 1);
+    if (r) return r;
+  }
+  return null;
+}
+
 /** Resolve nested playlist item shapes from yt-api / InnerTube-style payloads */
 function normalizePlaylistEntry(entry) {
+  if (typeof entry === 'string' && looksLikeYoutubeVideoId(entry)) {
+    return {
+      videoId: entry,
+      title: 'Untitled',
+      thumbnail: '',
+      duration: null,
+      channel: '—',
+    };
+  }
   if (!entry || typeof entry !== 'object') return null;
+  if (entry.continuationItemRenderer || entry.continuationEndpoint) return null;
+
   const node =
-    entry.videoRenderer ||
+    entry.playlistItemRenderer?.playlistVideoRenderer ||
+    entry.playlistItemRenderer?.videoRenderer ||
+    entry.playlistItemRenderer ||
     entry.playlistVideoRenderer ||
+    entry.videoRenderer ||
     entry.gridVideoRenderer ||
     entry.compactVideoRenderer ||
-    entry.content?.videoRenderer ||
     entry.content?.playlistVideoRenderer ||
+    entry.content?.videoRenderer ||
+    entry.video ||
     entry;
-  const id =
+
+  let id =
     node.videoId ||
     node.id ||
     entry.videoId ||
     entry.id ||
     entry.video_id;
-  if (!id || typeof id !== 'string') return null;
+  if (id != null && typeof id !== 'string') id = String(id);
+  if (!looksLikeYoutubeVideoId(id)) id = deepFindVideoId(entry, 0);
+  if (!looksLikeYoutubeVideoId(id)) return null;
+
   const title =
     (typeof node.title === 'string' ? node.title : null) ||
     node.title?.simpleText ||
@@ -105,6 +140,7 @@ function normalizePlaylistEntry(entry) {
     'Untitled';
   const thumbRaw =
     node.thumbnail?.thumbnails ||
+    node.thumbnail ||
     node.thumbnails ||
     entry.thumbnail;
   const duration =
@@ -132,6 +168,150 @@ function normalizePlaylistEntry(entry) {
     duration: durationSec,
     channel,
   };
+}
+
+function collectJsonArrays(obj, out, seen, depth = 0) {
+  if (depth > 14 || obj == null || typeof obj !== 'object') return;
+  if (seen.has(obj)) return;
+  seen.add(obj);
+  if (Array.isArray(obj)) {
+    if (obj.length > 0) out.push(obj);
+    for (const el of obj) collectJsonArrays(el, out, seen, depth + 1);
+    return;
+  }
+  for (const v of Object.values(obj)) collectJsonArrays(v, out, seen, depth + 1);
+}
+
+function scoreVideoEntryArray(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return 0;
+  return arr.reduce((n, item) => n + (normalizePlaylistEntry(item) ? 1 : 0), 0);
+}
+
+/**
+ * yt-api playlist JSON shape varies; find the array that actually holds videos.
+ */
+function videosFromPlaylistPayload(playlistData) {
+  const roots = [
+    playlistData,
+    playlistData?.data,
+    playlistData?.body,
+    playlistData?.result,
+    playlistData?.playlist,
+  ].filter((x) => x && typeof x === 'object');
+
+  let bestArr = [];
+  let bestScore = 0;
+
+  function considerList(candidate) {
+    if (!Array.isArray(candidate) || candidate.length === 0) return;
+    const score = scoreVideoEntryArray(candidate);
+    if (score > bestScore) {
+      bestScore = score;
+      bestArr = candidate;
+    }
+  }
+
+  for (const root of roots) {
+    for (const key of ['videos', 'contents', 'items', 'results', 'entries', 'list']) {
+      const block = root[key];
+      if (block && typeof block === 'object' && !Array.isArray(block)) {
+        considerList(Object.values(block));
+      }
+    }
+    const arrays = [];
+    collectJsonArrays(root, arrays, new WeakSet(), 0);
+    for (const arr of arrays) considerList(arr);
+  }
+
+  if (bestScore === 0) return [];
+
+  const videos = [];
+  const seenIds = new Set();
+  for (const entry of bestArr) {
+    const v = normalizePlaylistEntry(entry);
+    if (!v || seenIds.has(v.videoId)) continue;
+    seenIds.add(v.videoId);
+    videos.push(v);
+  }
+  return videos;
+}
+
+function nextPlaylistContinuationToken(data) {
+  if (!data || typeof data !== 'object') return null;
+  const t =
+    data.continuation ||
+    data.token ||
+    data.nextPageToken ||
+    data.nextContinuationData?.continuation ||
+    data.continuationEndpoint?.continuationCommand?.token ||
+    data.continuationCommand?.token;
+  return typeof t === 'string' && t.length > 0 ? t : null;
+}
+
+async function fetchPlaylistAllVideos(playlistId, headers, idParam = 'id') {
+  let token = null;
+  let prevToken = null;
+  const merged = [];
+  const seenIds = new Set();
+  let playlistTitle = 'Playlist';
+  let playlistChannel = 'Unknown';
+
+  for (let page = 0; page < 50; page++) {
+    const params = { [idParam]: playlistId };
+    if (token) params.token = token;
+
+    const { data } = await axios.get('https://yt-api.p.rapidapi.com/playlist', {
+      params,
+      headers,
+      timeout: 20000,
+    });
+
+    if (data?.error || data?.status === 'FAILED') {
+      if (page === 0) {
+        const msg = data?.message || 'Playlist unavailable from API.';
+        throw new Error(msg);
+      }
+      break;
+    }
+
+    if (page === 0) {
+      const meta = data?.data && typeof data.data === 'object' ? data.data : data;
+      playlistTitle =
+        meta.title ||
+        meta.playlistTitle ||
+        meta.name ||
+        data.title ||
+        playlistTitle;
+      playlistChannel =
+        meta.channelTitle ||
+        meta.author ||
+        meta.owner?.title ||
+        data.channelTitle ||
+        playlistChannel;
+    }
+
+    const batch = videosFromPlaylistPayload(data);
+    for (const v of batch) {
+      if (seenIds.has(v.videoId)) continue;
+      seenIds.add(v.videoId);
+      merged.push(v);
+    }
+
+    const next = nextPlaylistContinuationToken(data);
+    if (!next || next === prevToken) break;
+    prevToken = next;
+    token = next;
+  }
+
+  return { videos: merged, playlistTitle, playlistChannel };
+}
+
+async function fetchPlaylistWithFallback(playlistId, headers) {
+  let out = await fetchPlaylistAllVideos(playlistId, headers, 'id');
+  if (out.videos.length === 0) {
+    out = await fetchPlaylistAllVideos(playlistId, headers, 'list');
+  }
+  return out;
 }
 
 function canonicalHeightFromRow(row) {
@@ -205,43 +385,40 @@ async function info(req, res) {
     // Any URL with ?list= returns the full playlist (including watch?v=…&list=…).
     if (isPlaylist && playlistId) {
       try {
-        const playlistDetailsResponse = await axios.get('https://yt-api.p.rapidapi.com/playlist', {
-          params: { id: playlistId },
-          headers: {
-            'x-rapidapi-key':  RAPID_API_KEY,
-            'x-rapidapi-host': RAPID_API_HOST,
-          },
-          timeout: 15000,
-        });
+        const headers = {
+          'x-rapidapi-key': RAPID_API_KEY,
+          'x-rapidapi-host': RAPID_API_HOST,
+        };
+        const { videos, playlistTitle, playlistChannel } = await fetchPlaylistWithFallback(
+          playlistId,
+          headers,
+        );
 
-        const playlistData = playlistDetailsResponse.data;
-        const rawList =
-          playlistData.contents ||
-          playlistData.items ||
-          playlistData.videos ||
-          [];
-
-        const videos = [];
-        const seen = new Set();
-        for (const entry of rawList) {
-          const v = normalizePlaylistEntry(entry);
-          if (!v || seen.has(v.videoId)) continue;
-          seen.add(v.videoId);
-          videos.push(v);
+        if (videos.length === 0) {
+          console.error(
+            '[/api/info] Playlist parsed 0 videos for id=%s (check API key & response shape)',
+            playlistId,
+          );
+          return res.status(400).json({
+            error:
+              'No videos found for this playlist. The playlist may be private, the ID may be invalid, or the upstream API response format changed.',
+          });
         }
 
         return res.json({
           type: 'playlist',
           playlistId,
-          playlistTitle: playlistData.title || 'Playlist',
-          playlistChannel: playlistData.channelTitle || 'Unknown',
+          playlistTitle,
+          playlistChannel,
           videoCount: videos.length,
           videos,
           contextVideoId: videoId || undefined,
         });
       } catch (playlistErr) {
         console.error('[/api/info] Playlist fetch error:', playlistErr.message);
-        return res.status(400).json({ error: 'Failed to fetch playlist.' });
+        return res.status(400).json({
+          error: playlistErr.message || 'Failed to fetch playlist.',
+        });
       }
     }
 
