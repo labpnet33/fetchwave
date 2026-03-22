@@ -272,9 +272,13 @@ function buildQualityCard(fmt, index, videoData) {
   const ext        = (fmt.ext || 'mp4').toLowerCase();
   const badgeClass = ['mp4','webm','m4a','mp3'].includes(ext) ? ext : 'other';
   const qualLabel  = fmt.quality || fmt.resolution || (fmt.abr ? `${fmt.abr}kbps` : 'Unknown');
-  const typeLabel  = fmt.vcodec === 'none' ? 'Audio only'
-                   : fmt.acodec === 'none' ? 'Video only'
-                   : 'Video + Audio';
+  const typeLabel  = fmt.type === 'merged'
+    ? 'Merged: highest video + audio'
+    : fmt.vcodec === 'none'
+      ? 'Audio only'
+      : fmt.acodec === 'none'
+        ? 'Video only'
+        : 'Video + Audio';
   const sizeStr    = formatBytes(fmt.filesize);
   const fpsStr     = fmt.fps ? `${fmt.fps}fps` : '';
 
@@ -413,8 +417,10 @@ async function handlePlaylistVideoDownload(videoId, format) {
     if (format === 'mp3') {
       selectedFormat = data.formats.find(f => f.ext === 'mp3');
     } else {
-      selectedFormat = data.formats.find(f => f.ext === 'mp4' && f.quality === '720p') || 
-                      data.formats.find(f => f.ext === 'mp4');
+      selectedFormat =
+        data.formats.find((f) => f.type === 'merged' || f.formatId === '__MERGE_BEST__') ||
+        data.formats.find((f) => f.ext === 'mp4' && f.quality === '720p') ||
+        data.formats.find((f) => f.ext === 'mp4');
     }
 
     if (!selectedFormat) throw new Error('No suitable format found');

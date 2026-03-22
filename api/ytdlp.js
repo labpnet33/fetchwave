@@ -9,11 +9,186 @@
  * We'll filter to show the best available combined formats first.
  */
 const axios = require('axios');
-const https = require('https');
+const { spawn } = require('child_process');
 const { pipeline } = require('stream/promises');
 
 const RAPID_API_KEY  = process.env.RAPID_API_KEY || 'YOUR_KEY_HERE';
 const RAPID_API_HOST = 'yt-api.p.rapidapi.com';
+
+/** Client picks this to download best separate video+audio merged (4K HDR, etc.) */
+const MERGE_FORMAT_ID = '__MERGE_BEST__';
+
+function resolveFfmpegPath() {
+  if (process.env.FFMPEG_PATH) return process.env.FFMPEG_PATH;
+  try {
+    return require('ffmpeg-static');
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Best adaptive video + best adaptive audio (YouTube splits 4K+ from audio). */
+function pickBestVideoAndAudio(allFormats) {
+  const withUrl = allFormats.filter((f) => f.url);
+  const videos = withUrl.filter(
+    (f) => f.mimeType?.startsWith('video/') && !f.mimeType?.startsWith('audio/'),
+  );
+  const audios = withUrl.filter((f) => f.mimeType?.startsWith('audio/'));
+  videos.sort((a, b) => (b.height || 0) - (a.height || 0));
+  audios.sort((a, b) => (b.bitrate || 0) - (a.bitrate || 0));
+  const video =
+    videos.find((v) => v.mimeType?.includes('video/mp4') && v.mimeType?.includes('avc1')) ||
+    videos.find((v) => v.mimeType?.includes('video/mp4')) ||
+    videos[0];
+  const audio =
+    audios.find((a) => a.mimeType?.includes('audio/mp4')) ||
+    audios.find((a) => a.mimeType?.includes('aac')) ||
+    audios[0];
+  return { video, audio };
+}
+
+/** Single progressive file from `formats` (muxed), highest resolution. */
+function pickBestProgressiveMuxed(data) {
+  const list = (data.formats || []).filter(
+    (f) => f.url && f.mimeType?.includes('video/mp4'),
+  );
+  list.sort((a, b) => (b.height || 0) - (a.height || 0));
+  return list[0] || null;
+}
+
+/**
+ * Stream from YouTube CDN through this server. Uses axios so HTTP redirects are followed
+ * (raw https.get does not — that produced tiny/corrupt “downloads”).
+ */
+async function streamUrlToClient(req, res, sourceUrl, filename, fallbackContentType) {
+  const upstreamResp = await axios({
+    method: 'GET',
+    url: sourceUrl,
+    responseType: 'stream',
+    maxRedirects: 15,
+    timeout: 0,
+    maxContentLength: Infinity,
+    maxBodyLength: Infinity,
+    validateStatus: (s) => s >= 200 && s < 400,
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      Referer: 'https://www.youtube.com/',
+      Accept: '*/*',
+    },
+  });
+
+  if (upstreamResp.status >= 400) {
+    if (!res.headersSent) {
+      res.status(upstreamResp.status).json({ error: 'Upstream returned an error.' });
+    }
+    upstreamResp.data.destroy();
+    return;
+  }
+
+  const ct = upstreamResp.headers['content-type'];
+  const cl = upstreamResp.headers['content-length'];
+
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', ct || fallbackContentType);
+  if (cl != null && /^\d+$/.test(String(cl).trim())) {
+    res.setHeader('Content-Length', String(cl).trim());
+  }
+
+  const cleanup = () => {
+    if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
+    if (!res.writableEnded) res.destroy();
+  };
+  req.once('aborted', cleanup);
+  req.once('close', cleanup);
+
+  try {
+    await pipeline(upstreamResp.data, res);
+  } catch (err) {
+    if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+      console.error('[/api/download] pipeline error:', err.message);
+    }
+    if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
+    if (!res.writableEnded && !res.headersSent) {
+      res.status(500).end();
+    } else if (!res.writableEnded) {
+      res.destroy();
+    }
+  }
+}
+
+function mergeVideoAudioToClient(req, res, video, audio, safeTitle, ffmpegPath) {
+  return new Promise((resolve) => {
+    res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
+    res.setHeader('Content-Type', 'video/mp4');
+
+    const hdr =
+      'Referer: https://www.youtube.com/\r\n' +
+      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n';
+
+    const ff = spawn(
+      ffmpegPath,
+      [
+        '-hide_banner',
+        '-loglevel',
+        'error',
+        '-headers',
+        hdr,
+        '-i',
+        video.url,
+        '-headers',
+        hdr,
+        '-i',
+        audio.url,
+        '-c',
+        'copy',
+        '-map',
+        '0:v:0',
+        '-map',
+        '1:a:0',
+        '-movflags',
+        'frag_keyframe+empty_moov+faststart',
+        '-f',
+        'mp4',
+        'pipe:1',
+      ],
+      { stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+
+    ff.stderr.on('data', (d) => {
+      const s = d.toString();
+      if (s.trim()) console.error('[ffmpeg]', s.slice(0, 400));
+    });
+
+    const killFf = () => {
+      if (ff && !ff.killed) ff.kill('SIGKILL');
+    };
+    req.once('aborted', killFf);
+    req.once('close', killFf);
+
+    ff.on('error', (err) => {
+      console.error('[/api/download] ffmpeg spawn error:', err.message);
+      killFf();
+      if (!res.headersSent) res.status(500).json({ error: 'ffmpeg failed to start.' });
+      resolve();
+    });
+
+    ff.on('close', (code) => {
+      if (code !== 0 && code != null) {
+        console.error('[/api/download] ffmpeg exit code:', code);
+      }
+    });
+
+    pipeline(ff.stdout, res)
+      .catch((err) => {
+        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+          console.error('[/api/download] merge pipeline:', err.message);
+        }
+        killFf();
+      })
+      .finally(() => resolve());
+  });
+}
 
 function extractVideoId(url) {
   try {
@@ -503,13 +678,27 @@ async function info(req, res) {
       })
       .filter(isAllowedVideoRow);
 
-    // Prefer progressive/muxed MP4 (video+audio in one file). DASH video-only breaks "full video with audio".
     const muxedRows = videoFormatsRaw.filter((r) => r.acodec !== 'none');
     const forDedupe = muxedRows.length > 0 ? muxedRows : videoFormatsRaw;
 
-    const videoFormats = dedupeVideoFormatsByHeight(forDedupe).map(
+    const muxedDeduped = dedupeVideoFormatsByHeight(forDedupe).map(
       ({ height: _h, ...out }) => out,
     );
+
+    const mergeEntry = {
+      formatId: MERGE_FORMAT_ID,
+      ext: 'mp4',
+      quality: 'Best merged (max quality + audio)',
+      resolution: null,
+      fps: null,
+      vcodec: 'h264',
+      acodec: 'aac',
+      filesize: null,
+      isBest: true,
+      type: 'merged',
+    };
+
+    const videoFormats = muxedDeduped.map((row) => ({ ...row, isBest: false }));
 
     // Extract best audio format (MP3)
     const bestAudioFormat = extractBestAudioFormat(allFormats);
@@ -530,33 +719,23 @@ async function info(req, res) {
       });
     }
 
-    const formats = [...videoFormats, ...audioFormats];
+    const formats = [mergeEntry, ...videoFormats, ...audioFormats];
 
     /**
-     * SORTING STRATEGY:
-     * 1. Prioritize video formats first
-     * 2. Then sort by resolution (height) descending
-     * 3. Audio formats at the end
+     * SORTING: merged first, then muxed by height desc, then audio.
      */
     formats.sort((a, b) => {
-      // Video formats come before audio
+      if (a.type === 'merged' && b.type !== 'merged') return -1;
+      if (a.type !== 'merged' && b.type === 'merged') return 1;
       if (a.type === 'video' && b.type === 'audio') return -1;
       if (a.type === 'audio' && b.type === 'video') return 1;
-      
-      // Within same type, sort by quality
       if (a.type === 'video' && b.type === 'video') {
         const aH = parseInt(a.quality) || 0;
         const bH = parseInt(b.quality) || 0;
         return bH - aH;
       }
-      
       return 0;
     });
-
-    // Mark the best combined format as "Best"
-    if (formats.length > 0) {
-        formats[0].isBest = true;
-    }
 
     if (formats.length === 0) {
       return res.status(400).json({ error: 'No downloadable formats found.' });
@@ -582,9 +761,7 @@ async function download(req, res) {
   const url = req.query?.url;
   const formatId = req.query?.format_id;
   const format = req.query?.format || 'mp4';
-  const direct =
-    req.query?.direct === '1' ||
-    req.query?.direct === 'true';
+  const direct = req.query?.direct === '1' || req.query?.direct === 'true';
 
   if (!url || !formatId) {
     return res.status(400).json({ error: 'url and format_id are required.' });
@@ -604,87 +781,60 @@ async function download(req, res) {
     });
 
     const data = response.data;
-    const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
-    const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
+    if (data.status === 'FAILED' || data.error) {
+      return res.status(400).json({ error: data.message || 'Failed to fetch video.' });
+    }
 
-    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
+    const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
+    const title = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
 
     if (direct) {
+      const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
+      if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
       return res.redirect(302, fmt.url);
     }
 
-    const title = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
-    const filename = format === 'mp3' ? `${title}.mp3` : `${title}.mp4`;
-    const fallbackType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+    if (formatId === MERGE_FORMAT_ID) {
+      const { video, audio } = pickBestVideoAndAudio(allFormats);
 
-    const upstreamOptions = {
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Referer: 'https://www.youtube.com/',
-      },
-    };
-
-    let incomingStream = null;
-
-    const upstreamReq = https.get(fmt.url, upstreamOptions, (incoming) => {
-      incomingStream = incoming;
-
-      if (incoming.statusCode >= 400) {
-        if (!res.headersSent) {
-          res.status(incoming.statusCode).json({ error: 'Upstream returned an error.' });
-        }
-        incoming.resume();
+      if (video?.url && audio?.url && video.url === audio.url) {
+        await streamUrlToClient(req, res, video.url, `${title}.mp4`, 'video/mp4');
         return;
       }
 
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-
-      const upstreamType = incoming.headers['content-type'];
-      if (upstreamType) {
-        res.setHeader('Content-Type', upstreamType);
-      } else {
-        res.setHeader('Content-Type', fallbackType);
+      const ffmpegPath = resolveFfmpegPath();
+      if (ffmpegPath && video?.url && audio?.url) {
+        await mergeVideoAudioToClient(req, res, video, audio, title, ffmpegPath);
+        return;
       }
 
-      const rawLen = incoming.headers['content-length'];
-      if (rawLen != null && String(rawLen).trim() !== '' && /^\d+$/.test(String(rawLen).trim())) {
-        res.setHeader('Content-Length', String(rawLen).trim());
-      } else if (
-        fmt.contentLength != null &&
-        /^\d+$/.test(String(fmt.contentLength).trim())
-      ) {
-        res.setHeader('Content-Length', String(fmt.contentLength).trim());
+      const muxed = pickBestProgressiveMuxed(data);
+      if (muxed?.url) {
+        await streamUrlToClient(req, res, muxed.url, `${title}.mp4`, 'video/mp4');
+        return;
       }
 
-      const cleanup = () => {
-        if (incomingStream && !incomingStream.destroyed) incomingStream.destroy();
-        if (!res.writableEnded) res.destroy();
-      };
+      if (video?.url) {
+        await streamUrlToClient(req, res, video.url, `${title}.mp4`, 'video/mp4');
+        return;
+      }
 
-      req.once('aborted', cleanup);
-      req.once('close', cleanup);
-
-      pipeline(incoming, res).catch((err) => {
-        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-          console.error('[/api/download] pipeline error:', err.message);
-        }
-        if (incoming && !incoming.destroyed) incoming.destroy();
-        if (!res.writableEnded && !res.headersSent) {
-          res.status(500).end();
-        } else if (!res.writableEnded) {
-          res.destroy();
-        }
+      return res.status(400).json({
+        error:
+          'Could not build a merged download. Install ffmpeg, set FFMPEG_PATH, or pick a specific quality below.',
       });
-    });
+    }
 
-    upstreamReq.on('error', (err) => {
-      console.error('[/api/download] Upstream request error:', err.message);
-      if (!res.headersSent) res.status(500).json({ error: 'Download failed.' });
-    });
+    const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
+    if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
+
+    const filename = format === 'mp3' ? `${title}.mp3` : `${title}.mp4`;
+    const fallbackType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+
+    await streamUrlToClient(req, res, fmt.url, filename, fallbackType);
   } catch (err) {
     console.error('[/api/download] Catch error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: 'Download failed.' });
+    if (!res.headersSent) res.status(500).json({ error: err.message || 'Download failed.' });
   }
 }
 
@@ -718,23 +868,23 @@ async function bulkDownload(req, res) {
         if (data.error || data.status === 'FAILED') continue;
 
         const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
-        let selectedFormat = null;
+        const watchUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
         if (format === 'mp3') {
-          selectedFormat = extractBestAudioFormat(allFormats);
+          const selectedFormat = extractBestAudioFormat(allFormats);
+          if (selectedFormat?.itag != null) {
+            downloads.push({
+              videoId,
+              title: data.title,
+              url: `/api/download?url=${encodeURIComponent(watchUrl)}&format_id=${encodeURIComponent(String(selectedFormat.itag))}&format=mp3`,
+              format,
+            });
+          }
         } else {
-          // Get best video format
-          const videoFormats = allFormats.filter(f => 
-            f.mimeType?.includes('video/mp4') && f.qualityLabel === '720p'
-          );
-          selectedFormat = videoFormats[0] || allFormats.find(f => f.mimeType?.includes('video/mp4'));
-        }
-
-        if (selectedFormat?.url) {
           downloads.push({
             videoId,
             title: data.title,
-            url: selectedFormat.url,
+            url: `/api/download?url=${encodeURIComponent(watchUrl)}&format_id=${encodeURIComponent(MERGE_FORMAT_ID)}&format=mp4`,
             format,
           });
         }
