@@ -507,9 +507,41 @@ body {
   margin-bottom: 1.5rem;
 }
 
+.playlist-videos-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+
 .playlist-videos-header h3 {
   font-size: 1rem; font-weight: 700; letter-spacing: -0.01em;
-  margin-bottom: 0.4rem;
+  margin-bottom: 0;
+}
+
+.playlist-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--muted);
+  user-select: none;
+  flex-shrink: 0;
+}
+
+.playlist-select-all input {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.playlist-select-all:hover span {
+  color: var(--text);
 }
 
 .playlist-videos-hint {

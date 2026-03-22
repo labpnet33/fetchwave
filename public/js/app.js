@@ -25,6 +25,7 @@ const playlistTitle  = document.getElementById('playlistTitle');
 const playlistCount  = document.getElementById('playlistCount');
 const playlistVideos = document.getElementById('playlistVideos');
 const playlistResetBtn = document.getElementById('playlistResetBtn');
+const playlistSelectAll = document.getElementById('playlistSelectAll');
 
 let currentPlaylistData = null;
 let selectedPlaylistVideos = new Set();
@@ -151,7 +152,12 @@ playlistResetBtn.addEventListener('click', () => {
   playlistVideos.innerHTML = '';
   selectedPlaylistVideos.clear();
   currentPlaylistData = null;
+  syncPlaylistSelectAllState();
   window.scrollTo({ top: 0, behavior: 'smooth' });
+});
+
+playlistSelectAll.addEventListener('change', (e) => {
+  setAllPlaylistVideosSelected(e.target.checked);
 });
 
 /* ── FETCH ── */
@@ -206,6 +212,32 @@ function renderResults(data) {
   formats.forEach((fmt, i) => qualityGrid.appendChild(buildQualityCard(fmt, i, data)));
 }
 
+function syncPlaylistSelectAllState() {
+  if (!playlistSelectAll) return;
+  const boxes = playlistVideos.querySelectorAll('.video-checkbox');
+  const n = boxes.length;
+  if (n === 0) {
+    playlistSelectAll.checked = false;
+    playlistSelectAll.indeterminate = false;
+    playlistSelectAll.disabled = true;
+    return;
+  }
+  playlistSelectAll.disabled = false;
+  const checked = [...boxes].filter((b) => b.checked).length;
+  playlistSelectAll.checked = checked === n;
+  playlistSelectAll.indeterminate = checked > 0 && checked < n;
+}
+
+function setAllPlaylistVideosSelected(select) {
+  selectedPlaylistVideos.clear();
+  playlistVideos.querySelectorAll('.video-checkbox').forEach((cb) => {
+    cb.checked = select;
+    const id = cb.dataset.videoId;
+    if (select && id) selectedPlaylistVideos.add(id);
+  });
+  syncPlaylistSelectAllState();
+}
+
 /* ── RENDER PLAYLIST ── */
 function renderPlaylist(data, url) {
   currentPlaylistData = { ...data, url };
@@ -218,6 +250,8 @@ function renderPlaylist(data, url) {
   data.videos.forEach((video, i) => {
     playlistVideos.appendChild(buildPlaylistVideoCard(video, i));
   });
+
+  syncPlaylistSelectAllState();
 
   if (data.contextVideoId) {
     requestAnimationFrame(() => {
@@ -308,6 +342,7 @@ function buildPlaylistVideoCard(video, index) {
     } else {
       selectedPlaylistVideos.delete(video.videoId);
     }
+    syncPlaylistSelectAllState();
   });
 
   // Individual download buttons
