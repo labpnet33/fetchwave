@@ -79,6 +79,94 @@ function normalizeThumbnail(thumb) {
   return '';
 }
 
+/** Resolve nested playlist item shapes from yt-api / InnerTube-style payloads */
+function normalizePlaylistEntry(entry) {
+  if (!entry || typeof entry !== 'object') return null;
+  const node =
+    entry.videoRenderer ||
+    entry.playlistVideoRenderer ||
+    entry.gridVideoRenderer ||
+    entry.compactVideoRenderer ||
+    entry.content?.videoRenderer ||
+    entry.content?.playlistVideoRenderer ||
+    entry;
+  const id =
+    node.videoId ||
+    node.id ||
+    entry.videoId ||
+    entry.id ||
+    entry.video_id;
+  if (!id || typeof id !== 'string') return null;
+  const title =
+    (typeof node.title === 'string' ? node.title : null) ||
+    node.title?.simpleText ||
+    node.title?.runs?.map((r) => r.text).join('') ||
+    entry.title ||
+    'Untitled';
+  const thumbRaw =
+    node.thumbnail?.thumbnails ||
+    node.thumbnails ||
+    entry.thumbnail;
+  const duration =
+    node.lengthSeconds ??
+    node.lengthText?.simpleText ??
+    entry.lengthSeconds ??
+    entry.length;
+  let durationSec = null;
+  if (duration != null && typeof duration === 'number') durationSec = duration;
+  else if (typeof duration === 'string' && /^\d+$/.test(duration)) {
+    durationSec = parseInt(duration, 10);
+  }
+  const channel =
+    node.shortBylineText?.runs?.[0]?.text ||
+    node.ownerText?.runs?.[0]?.text ||
+    node.longBylineText?.runs?.[0]?.text ||
+    entry.channelTitle ||
+    entry.author ||
+    entry.uploader ||
+    '—';
+  return {
+    videoId: id,
+    title,
+    thumbnail: normalizeThumbnail(thumbRaw),
+    duration: durationSec,
+    channel,
+  };
+}
+
+function canonicalHeightFromRow(row) {
+  if (row.height && row.height > 0) return row.height;
+  const m = String(row.quality || '').match(/(\d{3,4})p\b/i);
+  if (m) return parseInt(m[1], 10);
+  return 0;
+}
+
+/** Prefer muxed (video+audio); then higher bitrate / size */
+function muxedVideoBetter(a, b) {
+  const aMux = a.acodec !== 'none';
+  const bMux = b.acodec !== 'none';
+  if (aMux !== bMux) return aMux;
+  const abrA = a.abr || 0;
+  const abrB = b.abr || 0;
+  if (abrA !== abrB) return abrA > abrB;
+  const szA = a.filesize || 0;
+  const szB = b.filesize || 0;
+  return szA >= szB;
+}
+
+function dedupeVideoFormatsByHeight(rows) {
+  const byH = new Map();
+  for (const row of rows) {
+    const h = canonicalHeightFromRow(row);
+    if (!h) continue;
+    const prev = byH.get(h);
+    if (!prev || muxedVideoBetter(row, prev)) byH.set(h, row);
+  }
+  return [...byH.entries()]
+    .sort((a, b) => b[0] - a[0])
+    .map(([, row]) => row);
+}
+
 /**
  * Extract audio-only formats (MP3 equivalent)
  * Returns the highest quality audio format available
@@ -114,8 +202,8 @@ async function info(req, res) {
       return res.status(400).json({ error: 'Invalid YouTube URL.' });
     }
 
-    // Playlist URLs only (no &v=). Links with both video + list show the single video.
-    if (isPlaylist && playlistId && !videoId) {
+    // Any URL with ?list= returns the full playlist (including watch?v=…&list=…).
+    if (isPlaylist && playlistId) {
       try {
         const playlistDetailsResponse = await axios.get('https://yt-api.p.rapidapi.com/playlist', {
           params: { id: playlistId },
@@ -133,23 +221,14 @@ async function info(req, res) {
           playlistData.videos ||
           [];
 
-        const videos = rawList
-          .map((v) => {
-            const id = v.videoId || v.id || v.video_id;
-            if (!id) return null;
-            return {
-              videoId: id,
-              title: v.title || 'Untitled',
-              thumbnail: normalizeThumbnail(v.thumbnail),
-              duration: v.lengthSeconds != null
-                ? parseInt(v.lengthSeconds, 10)
-                : v.length != null
-                  ? parseInt(v.length, 10)
-                  : null,
-              channel: v.channelTitle || v.author || v.uploader || '—',
-            };
-          })
-          .filter(Boolean);
+        const videos = [];
+        const seen = new Set();
+        for (const entry of rawList) {
+          const v = normalizePlaylistEntry(entry);
+          if (!v || seen.has(v.videoId)) continue;
+          seen.add(v.videoId);
+          videos.push(v);
+        }
 
         return res.json({
           type: 'playlist',
@@ -158,6 +237,7 @@ async function info(req, res) {
           playlistChannel: playlistData.channelTitle || 'Unknown',
           videoCount: videos.length,
           videos,
+          contextVideoId: videoId || undefined,
         });
       } catch (playlistErr) {
         console.error('[/api/info] Playlist fetch error:', playlistErr.message);
@@ -213,8 +293,8 @@ async function info(req, res) {
       return false;
     }
 
-    // Extract MP4 video formats (label-based or height-based; API shapes vary)
-    const videoFormats = allFormats
+    // MP4 rows, then one row per height: prefer muxed (video+audio), then highest bitrate/size
+    const videoFormatsRaw = allFormats
       .filter((f) => f.url)
       .map((f, i) => {
         const isMp4 =
@@ -241,8 +321,11 @@ async function info(req, res) {
           type: 'video',
         };
       })
-      .filter(isAllowedVideoRow)
-      .map(({ height: _h, ...out }) => out);
+      .filter(isAllowedVideoRow);
+
+    const videoFormats = dedupeVideoFormatsByHeight(videoFormatsRaw).map(
+      ({ height: _h, ...out }) => out,
+    );
 
     // Extract best audio format (MP3)
     const bestAudioFormat = extractBestAudioFormat(allFormats);

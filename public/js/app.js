@@ -218,6 +218,15 @@ function renderPlaylist(data, url) {
   data.videos.forEach((video, i) => {
     playlistVideos.appendChild(buildPlaylistVideoCard(video, i));
   });
+
+  if (data.contextVideoId) {
+    requestAnimationFrame(() => {
+      playlistVideos.querySelector('.playlist-video-context')?.scrollIntoView({
+        block: 'nearest',
+        behavior: 'smooth',
+      });
+    });
+  }
 }
 
 /* ── BUILD QUALITY CARD (Single Video) ── */
@@ -264,7 +273,10 @@ function buildQualityCard(fmt, index, videoData) {
 /* ── BUILD PLAYLIST VIDEO CARD ── */
 function buildPlaylistVideoCard(video, index) {
   const card = document.createElement('div');
-  card.className = 'playlist-video-card';
+  const ctxId = currentPlaylistData?.contextVideoId;
+  card.className =
+    'playlist-video-card' +
+    (ctxId && ctxId === video.videoId ? ' playlist-video-context' : '');
   card.style.animationDelay = `${index * 0.05}s`;
 
   const durationStr = formatDuration(video.duration) || '—';
