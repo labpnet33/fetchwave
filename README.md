@@ -115,7 +115,7 @@ vercel --prod
 
 ### Downloads: quality, redirects, and merge
 
-- **Streaming uses axios** with **HTTP redirects followed** (Node’s raw `https` client does not follow redirects, which used to save tiny HTML/error bodies as “.mp4”).
+- **Streaming uses axios** with **HTTP redirects followed** (Node’s raw `https` client does not follow redirects, which used to save tiny HTML/error bodies as “.mp4”). Requests use **`Referer: https://www.youtube.com/watch?v=VIDEO_ID`** (required by the CDN; a generic referer often returns **403**). If the CDN still returns **403**, the server **falls back to `@distube/ytdl-core`** for the same format.
 - **“Best merged (max quality + audio)”** (`format_id=__MERGE_BEST__`) combines the **best adaptive video** and **best adaptive audio** with **ffmpeg** (`-c copy`) so you get **4K/HDR-style** quality with audio when YouTube splits streams. Requires **ffmpeg** on the server (see `FFMPEG_PATH` or bundled **`ffmpeg-static`** from npm).
 - **Lower rows** are **progressive/muxed** MP4s (e.g. 360p, 720p) when the API exposes them.
 - **Optional:** **`?direct=1`** returns a **302** to the CDN URL. Often unreliable in browsers; prefer the default proxied stream.

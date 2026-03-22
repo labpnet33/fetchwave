@@ -9,6 +9,7 @@
  * We'll filter to show the best available combined formats first.
  */
 const axios = require('axios');
+const ytdl = require('@distube/ytdl-core');
 const { spawn } = require('child_process');
 const { pipeline } = require('stream/promises');
 
@@ -56,75 +57,175 @@ function pickBestProgressiveMuxed(data) {
   return list[0] || null;
 }
 
+function watchPageUrl(videoId) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
 /**
- * Stream from YouTube CDN through this server. Uses axios so HTTP redirects are followed
- * (raw https.get does not — that produced tiny/corrupt “downloads”).
+ * YouTube CDN often returns 403 unless Referer is the watch page (not youtube.com root).
  */
-async function streamUrlToClient(req, res, sourceUrl, filename, fallbackContentType) {
-  const upstreamResp = await axios({
-    method: 'GET',
-    url: sourceUrl,
-    responseType: 'stream',
-    maxRedirects: 15,
-    timeout: 0,
-    maxContentLength: Infinity,
-    maxBodyLength: Infinity,
-    validateStatus: (s) => s >= 200 && s < 400,
-    headers: {
-      'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      Referer: 'https://www.youtube.com/',
-      Accept: '*/*',
-    },
-  });
+function buildYoutubeCdnHeaders(videoId) {
+  const referer = videoId ? watchPageUrl(videoId) : 'https://www.youtube.com/';
+  return {
+    'User-Agent':
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    Accept: '*/*',
+    'Accept-Language': 'en-US,en;q=0.9',
+    Origin: 'https://www.youtube.com',
+    Referer: referer,
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
+  };
+}
 
-  if (upstreamResp.status >= 400) {
-    if (!res.headersSent) {
-      res.status(upstreamResp.status).json({ error: 'Upstream returned an error.' });
+/**
+ * Fallback when CDN rejects axios (403): use ytdl-core with signed URLs / player internals.
+ */
+async function streamYtdlToClient(req, res, watchUrl, formatId, filename, fallbackContentType, formatKind) {
+  if (res.headersSent) return;
+
+  let ytdlOptions;
+  if (formatKind === 'mp3' || formatId === 'audio_best') {
+    ytdlOptions = { filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1 << 25 };
+  } else if (formatId === MERGE_FORMAT_ID) {
+    ytdlOptions = { filter: 'videoandaudio', quality: 'highest' };
+  } else {
+    const itag = parseInt(String(formatId), 10);
+    if (Number.isNaN(itag)) {
+      throw new Error('Invalid format id for ytdl fallback');
     }
-    upstreamResp.data.destroy();
-    return;
+    ytdlOptions = { filter: (f) => f.itag === itag, highWaterMark: 1 << 25 };
   }
 
-  const ct = upstreamResp.headers['content-type'];
-  const cl = upstreamResp.headers['content-length'];
-
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.setHeader('Content-Type', ct || fallbackContentType);
-  if (cl != null && /^\d+$/.test(String(cl).trim())) {
-    res.setHeader('Content-Length', String(cl).trim());
-  }
+  const stream = ytdl(watchUrl, ytdlOptions);
 
   const cleanup = () => {
-    if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
-    if (!res.writableEnded) res.destroy();
+    if (stream && !stream.destroyed) stream.destroy();
   };
   req.once('aborted', cleanup);
   req.once('close', cleanup);
 
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.setHeader('Content-Type', fallbackContentType);
+
+  stream.on('error', (err) => {
+    console.error('[/api/download] ytdl stream error:', err.message);
+    cleanup();
+  });
+
   try {
-    await pipeline(upstreamResp.data, res);
+    await pipeline(stream, res);
   } catch (err) {
     if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
-      console.error('[/api/download] pipeline error:', err.message);
+      console.error('[/api/download] ytdl pipeline:', err.message);
     }
-    if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
+    cleanup();
     if (!res.writableEnded && !res.headersSent) {
-      res.status(500).end();
+      res.status(500).json({ error: err.message || 'Download failed.' });
     } else if (!res.writableEnded) {
       res.destroy();
     }
   }
 }
 
-function mergeVideoAudioToClient(req, res, video, audio, safeTitle, ffmpegPath) {
+/**
+ * Stream from YouTube CDN through this server. Uses axios so HTTP redirects are followed.
+ * On 403/401, retries with @distube/ytdl-core (same itag / merge / audio).
+ */
+async function streamUrlToClient(req, res, opts) {
+  const {
+    sourceUrl,
+    filename,
+    fallbackContentType,
+    videoId,
+    watchUrl,
+    formatId,
+    formatKind,
+  } = opts;
+
+  try {
+    const upstreamResp = await axios({
+      method: 'GET',
+      url: sourceUrl,
+      responseType: 'stream',
+      maxRedirects: 15,
+      timeout: 0,
+      maxContentLength: Infinity,
+      maxBodyLength: Infinity,
+      validateStatus: (s) => s >= 200 && s < 400,
+      headers: buildYoutubeCdnHeaders(videoId),
+    });
+
+    if (upstreamResp.status >= 400) {
+      if (!res.headersSent) {
+        res.status(upstreamResp.status).json({ error: 'Upstream returned an error.' });
+      }
+      upstreamResp.data.destroy();
+      return;
+    }
+
+    const ct = upstreamResp.headers['content-type'];
+    const cl = upstreamResp.headers['content-length'];
+
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('Content-Type', ct || fallbackContentType);
+    if (cl != null && /^\d+$/.test(String(cl).trim())) {
+      res.setHeader('Content-Length', String(cl).trim());
+    }
+
+    const cleanup = () => {
+      if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
+      if (!res.writableEnded) res.destroy();
+    };
+    req.once('aborted', cleanup);
+    req.once('close', cleanup);
+
+    try {
+      await pipeline(upstreamResp.data, res);
+    } catch (err) {
+      if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        console.error('[/api/download] pipeline error:', err.message);
+      }
+      if (!upstreamResp.data.destroyed) upstreamResp.data.destroy();
+      if (!res.writableEnded && !res.headersSent) {
+        res.status(500).end();
+      } else if (!res.writableEnded) {
+        res.destroy();
+      }
+    }
+  } catch (err) {
+    const st = err.response?.status;
+    if ((st === 403 || st === 401) && watchUrl && formatId != null) {
+      console.warn('[/api/download] CDN returned', st, '— retrying with ytdl-core');
+      if (!res.headersSent) {
+        await streamYtdlToClient(
+          req,
+          res,
+          watchUrl,
+          formatId,
+          filename,
+          fallbackContentType,
+          formatKind,
+        );
+      }
+      return;
+    }
+    throw err;
+  }
+}
+
+function mergeVideoAudioToClient(req, res, video, audio, safeTitle, ffmpegPath, videoId) {
+  const refererLine = videoId
+    ? `Referer: ${watchPageUrl(videoId)}\r\n`
+    : 'Referer: https://www.youtube.com/\r\n';
   return new Promise((resolve) => {
     res.setHeader('Content-Disposition', `attachment; filename="${safeTitle}.mp4"`);
     res.setHeader('Content-Type', 'video/mp4');
 
     const hdr =
-      'Referer: https://www.youtube.com/\r\n' +
-      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36\r\n';
+      refererLine +
+      'User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36\r\n';
 
     const ff = spawn(
       ffmpegPath,
@@ -787,6 +888,7 @@ async function download(req, res) {
 
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
     const title = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
+    const watchUrl = watchPageUrl(videoId);
 
     if (direct) {
       const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
@@ -798,31 +900,63 @@ async function download(req, res) {
       const { video, audio } = pickBestVideoAndAudio(allFormats);
 
       if (video?.url && audio?.url && video.url === audio.url) {
-        await streamUrlToClient(req, res, video.url, `${title}.mp4`, 'video/mp4');
+        await streamUrlToClient(req, res, {
+          sourceUrl: video.url,
+          filename: `${title}.mp4`,
+          fallbackContentType: 'video/mp4',
+          videoId,
+          watchUrl,
+          formatId: MERGE_FORMAT_ID,
+          formatKind: format,
+        });
         return;
       }
 
       const ffmpegPath = resolveFfmpegPath();
       if (ffmpegPath && video?.url && audio?.url) {
-        await mergeVideoAudioToClient(req, res, video, audio, title, ffmpegPath);
+        await mergeVideoAudioToClient(req, res, video, audio, title, ffmpegPath, videoId);
         return;
       }
 
       const muxed = pickBestProgressiveMuxed(data);
       if (muxed?.url) {
-        await streamUrlToClient(req, res, muxed.url, `${title}.mp4`, 'video/mp4');
+        await streamUrlToClient(req, res, {
+          sourceUrl: muxed.url,
+          filename: `${title}.mp4`,
+          fallbackContentType: 'video/mp4',
+          videoId,
+          watchUrl,
+          formatId: MERGE_FORMAT_ID,
+          formatKind: format,
+        });
         return;
       }
 
       if (video?.url) {
-        await streamUrlToClient(req, res, video.url, `${title}.mp4`, 'video/mp4');
+        await streamUrlToClient(req, res, {
+          sourceUrl: video.url,
+          filename: `${title}.mp4`,
+          fallbackContentType: 'video/mp4',
+          videoId,
+          watchUrl,
+          formatId: MERGE_FORMAT_ID,
+          formatKind: format,
+        });
         return;
       }
 
-      return res.status(400).json({
-        error:
-          'Could not build a merged download. Install ffmpeg, set FFMPEG_PATH, or pick a specific quality below.',
-      });
+      if (!res.headersSent) {
+        await streamYtdlToClient(
+          req,
+          res,
+          watchUrl,
+          MERGE_FORMAT_ID,
+          `${title}.mp4`,
+          'video/mp4',
+          format,
+        );
+      }
+      return;
     }
 
     const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
@@ -831,10 +965,22 @@ async function download(req, res) {
     const filename = format === 'mp3' ? `${title}.mp3` : `${title}.mp4`;
     const fallbackType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
 
-    await streamUrlToClient(req, res, fmt.url, filename, fallbackType);
+    await streamUrlToClient(req, res, {
+      sourceUrl: fmt.url,
+      filename,
+      fallbackContentType: fallbackType,
+      videoId,
+      watchUrl,
+      formatId,
+      formatKind: format,
+    });
   } catch (err) {
     console.error('[/api/download] Catch error:', err.message);
-    if (!res.headersSent) res.status(500).json({ error: err.message || 'Download failed.' });
+    if (!res.headersSent) {
+      res.status(500).json({
+        error: err.response?.data?.message || err.message || 'Download failed.',
+      });
+    }
   }
 }
 
