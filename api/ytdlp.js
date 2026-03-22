@@ -17,11 +17,30 @@ const RAPID_API_HOST = 'yt-api.p.rapidapi.com';
 function extractVideoId(url) {
   try {
     const u = new URL(url.trim());
-    if (u.hostname.includes('youtube.com')) {
-      if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2];
+    const host = u.hostname.replace(/^www\./, '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.replace(/^\//, '').split('/')[0];
+      return id || null;
+    }
+    if (host.includes('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      if (u.pathname.startsWith('/shorts/')) {
+        const id = u.pathname.split('/')[2];
+        return id || null;
+      }
+      if (u.pathname.startsWith('/embed/')) {
+        const id = u.pathname.split('/')[2]?.split('?')[0];
+        return id || null;
+      }
+      if (u.pathname.startsWith('/live/')) {
+        const id = u.pathname.split('/')[2]?.split('?')[0];
+        return id || null;
+      }
+      if (u.pathname.startsWith('/v/')) {
+        const id = u.pathname.split('/')[2]?.split('?')[0];
+        return id || null;
+      }
       return u.searchParams.get('v');
     }
-    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('?')[0];
   } catch (_) {}
   return null;
 }
@@ -29,7 +48,8 @@ function extractVideoId(url) {
 function isPlaylistUrl(url) {
   try {
     const u = new URL(url.trim());
-    if (u.hostname.includes('youtube.com')) {
+    const host = u.hostname.replace(/^www\./, '');
+    if (host.includes('youtube.com') || host.endsWith('youtube-nocookie.com')) {
       return u.searchParams.has('list');
     }
   } catch (_) {}
@@ -39,11 +59,24 @@ function isPlaylistUrl(url) {
 function extractPlaylistId(url) {
   try {
     const u = new URL(url.trim());
-    if (u.hostname.includes('youtube.com')) {
+    const host = u.hostname.replace(/^www\./, '');
+    if (host.includes('youtube.com') || host.endsWith('youtube-nocookie.com')) {
       return u.searchParams.get('list');
     }
   } catch (_) {}
   return null;
+}
+
+function normalizeThumbnail(thumb) {
+  if (thumb == null) return '';
+  if (typeof thumb === 'string') return thumb;
+  if (Array.isArray(thumb)) {
+    const first = thumb[0];
+    if (typeof first === 'string') return first;
+    return first?.url || first?.src || '';
+  }
+  if (typeof thumb === 'object') return thumb.url || thumb.src || '';
+  return '';
 }
 
 /**
@@ -77,23 +110,13 @@ async function info(req, res) {
     const isPlaylist = isPlaylistUrl(url);
     const playlistId = extractPlaylistId(url);
 
-    if (!videoId && !isPlaylist) {
+    if (!videoId && !(isPlaylist && playlistId)) {
       return res.status(400).json({ error: 'Invalid YouTube URL.' });
     }
 
-    // Handle playlist
-    if (isPlaylist && playlistId) {
+    // Playlist URLs only (no &v=). Links with both video + list show the single video.
+    if (isPlaylist && playlistId && !videoId) {
       try {
-        const playlistResponse = await axios.get('https://yt-api.p.rapidapi.com/search', {
-          params: { query: `list:${playlistId}`, type: 'playlist' },
-          headers: {
-            'x-rapidapi-key':  RAPID_API_KEY,
-            'x-rapidapi-host': RAPID_API_HOST,
-          },
-          timeout: 15000,
-        });
-
-        // Try to get playlist details
         const playlistDetailsResponse = await axios.get('https://yt-api.p.rapidapi.com/playlist', {
           params: { id: playlistId },
           headers: {
@@ -104,13 +127,29 @@ async function info(req, res) {
         });
 
         const playlistData = playlistDetailsResponse.data;
-        const videos = (playlistData.contents || []).map(v => ({
-          videoId: v.videoId,
-          title: v.title,
-          thumbnail: v.thumbnail?.[0]?.url || v.thumbnail,
-          duration: v.lengthSeconds ? parseInt(v.lengthSeconds) : null,
-          channel: v.channelTitle || v.uploader,
-        }));
+        const rawList =
+          playlistData.contents ||
+          playlistData.items ||
+          playlistData.videos ||
+          [];
+
+        const videos = rawList
+          .map((v) => {
+            const id = v.videoId || v.id || v.video_id;
+            if (!id) return null;
+            return {
+              videoId: id,
+              title: v.title || 'Untitled',
+              thumbnail: normalizeThumbnail(v.thumbnail),
+              duration: v.lengthSeconds != null
+                ? parseInt(v.lengthSeconds, 10)
+                : v.length != null
+                  ? parseInt(v.length, 10)
+                  : null,
+              channel: v.channelTitle || v.author || v.uploader || '—',
+            };
+          })
+          .filter(Boolean);
 
         return res.json({
           type: 'playlist',
@@ -124,6 +163,10 @@ async function info(req, res) {
         console.error('[/api/info] Playlist fetch error:', playlistErr.message);
         return res.status(400).json({ error: 'Failed to fetch playlist.' });
       }
+    }
+
+    if (!videoId) {
+      return res.status(400).json({ error: 'Invalid YouTube URL.' });
     }
 
     // Handle single video
@@ -156,43 +199,50 @@ async function info(req, res) {
     }));
 
     const allFormats = [...combined, ...adaptive];
-    
-    // Define allowed quality options (MP4 only)
-    const allowedQualities = ['144p', '360p', '720p', '1080p', '1440p'];
 
-    // Extract MP4 video formats
+    const allowedQualities = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p'];
+    const allowedHeights = new Set([144, 240, 360, 480, 720, 1080, 1440]);
+
+    function isAllowedVideoRow(row) {
+      if (row.ext !== 'mp4' || row.vcodec === 'none') return false;
+      const q = String(row.quality || '').toLowerCase();
+      if (allowedQualities.some((lab) => q.includes(lab))) return true;
+      const pm = q.match(/(\d{3,4})p\b/);
+      if (pm && allowedQualities.includes(`${pm[1]}p`)) return true;
+      if (row.height && allowedHeights.has(row.height)) return true;
+      return false;
+    }
+
+    // Extract MP4 video formats (label-based or height-based; API shapes vary)
     const videoFormats = allFormats
-      .filter(f => f.url)
+      .filter((f) => f.url)
       .map((f, i) => {
-        const isMp4 = f.mimeType?.includes('video/mp4') || f.mimeType?.includes('audio/mp4');
-        const ext = isMp4 ? 'mp4' : (f.mimeType?.includes('webm') ? 'webm' : 'mp4');
-        const quality = f.qualityLabel || (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : 'audio');
+        const isMp4 =
+          f.mimeType?.includes('video/mp4') ||
+          f.mimeType?.includes('audio/mp4');
+        const ext = isMp4 ? 'mp4' : f.mimeType?.includes('webm') ? 'webm' : 'mp4';
+        const quality =
+          f.qualityLabel ||
+          (f.height ? `${f.height}p` : null) ||
+          (f.bitrate ? `${Math.round(f.bitrate / 1000)}kbps` : '');
 
         return {
-          formatId:   f.itag?.toString() || i.toString(),
+          formatId: f.itag?.toString() || i.toString(),
           ext,
           quality,
           resolution: f.qualityLabel || null,
-          fps:        f.fps || null,
-          vcodec:     f._hasVideo ? 'h264' : 'none',
-          acodec:     f._hasAudio ? 'aac' : 'none',
-          abr:        f.bitrate ? Math.round(f.bitrate / 1000) : null,
-          filesize:   f.contentLength ? parseInt(f.contentLength) : null,
-          isBest:     false,
-          type:       'video',
+          height: f.height || null,
+          fps: f.fps || null,
+          vcodec: f._hasVideo ? 'h264' : 'none',
+          acodec: f._hasAudio ? 'aac' : 'none',
+          abr: f.bitrate ? Math.round(f.bitrate / 1000) : null,
+          filesize: f.contentLength ? parseInt(f.contentLength, 10) : null,
+          isBest: false,
+          type: 'video',
         };
       })
-      .filter(f => {
-        // Only include MP4 formats with allowed quality labels
-        if (f.ext !== 'mp4') return false;
-        if (!f.quality) return false;
-        
-        // Check if quality matches one of the allowed options
-        const matchesQuality = allowedQualities.some(q => f.quality.includes(q));
-        if (!matchesQuality) return false;
-
-        return true;
-      });
+      .filter(isAllowedVideoRow)
+      .map(({ height: _h, ...out }) => out);
 
     // Extract best audio format (MP3)
     const bestAudioFormat = extractBestAudioFormat(allFormats);
@@ -249,8 +299,8 @@ async function info(req, res) {
       type: 'video',
       title:     data.title,
       channel:   data.channelTitle || data.uploader,
-      duration:  data.lengthSeconds ? parseInt(data.lengthSeconds) : null,
-      thumbnail: data.thumbnail?.[0]?.url || data.thumbnail,
+      duration:  data.lengthSeconds ? parseInt(data.lengthSeconds, 10) : null,
+      thumbnail: normalizeThumbnail(data.thumbnail),
       videoId,
       formats,
     });

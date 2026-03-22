@@ -39,11 +39,18 @@ errorBanner.style.display    = 'none';
 function extractVideoId(url) {
   try {
     const u = new URL(url.trim());
-    if (u.hostname.includes('youtube.com')) {
-      if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2];
-      return u.searchParams.get('v') || null;
+    const host = u.hostname.replace(/^www\./, '');
+    if (host === 'youtu.be') {
+      const id = u.pathname.replace(/^\//, '').split('/')[0];
+      return id || null;
     }
-    if (u.hostname === 'youtu.be') return u.pathname.slice(1).split('?')[0];
+    if (host.includes('youtube.com') || host.endsWith('youtube-nocookie.com')) {
+      if (u.pathname.startsWith('/shorts/')) return u.pathname.split('/')[2] || null;
+      if (u.pathname.startsWith('/embed/')) return u.pathname.split('/')[2]?.split('?')[0] || null;
+      if (u.pathname.startsWith('/live/')) return u.pathname.split('/')[2]?.split('?')[0] || null;
+      if (u.pathname.startsWith('/v/')) return u.pathname.split('/')[2]?.split('?')[0] || null;
+      return u.searchParams.get('v');
+    }
   } catch (_) {}
   return null;
 }
@@ -51,11 +58,24 @@ function extractVideoId(url) {
 function isPlaylistUrl(url) {
   try {
     const u = new URL(url.trim());
-    if (u.hostname.includes('youtube.com')) {
+    const host = u.hostname.replace(/^www\./, '');
+    if (host.includes('youtube.com') || host.endsWith('youtube-nocookie.com')) {
       return u.searchParams.has('list');
     }
   } catch (_) {}
   return false;
+}
+
+function resolveThumbnailUrl(thumb) {
+  if (thumb == null) return '';
+  if (typeof thumb === 'string') return thumb;
+  if (Array.isArray(thumb)) {
+    const first = thumb[0];
+    if (typeof first === 'string') return first;
+    return first?.url || first?.src || '';
+  }
+  if (typeof thumb === 'object') return thumb.url || thumb.src || '';
+  return '';
 }
 
 function validateInput(url) {
@@ -175,7 +195,7 @@ fetchBtn.addEventListener('click', async () => {
 /* ── RENDER RESULTS (Single Video) ── */
 function renderResults(data) {
   metaTitle.textContent    = data.title     || 'Unknown Title';
-  metaThumb.src            = data.thumbnail || '';
+  metaThumb.src            = resolveThumbnailUrl(data.thumbnail);
   metaThumb.alt            = data.title     || '';
   metaDuration.textContent = formatDuration(data.duration) || '—';
   metaChannel.textContent  = data.channel   || '—';
@@ -253,7 +273,7 @@ function buildPlaylistVideoCard(video, index) {
     <div class="playlist-video-checkbox">
       <input type="checkbox" class="video-checkbox" data-video-id="${video.videoId}" />
     </div>
-    <img src="${video.thumbnail || ''}" alt="${video.title}" class="playlist-video-thumb"/>
+    <img src="${resolveThumbnailUrl(video.thumbnail)}" alt="${video.title}" class="playlist-video-thumb"/>
     <div class="playlist-video-info">
       <h4 class="playlist-video-title">${video.title}</h4>
       <p class="playlist-video-meta">${video.channel || 'Unknown'} • ${durationStr}</p>
