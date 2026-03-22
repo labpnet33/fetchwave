@@ -113,10 +113,12 @@ vercel --prod
 
 > **Note:** Vercel **Hobby** enforces a **10-second** serverless limit — long downloads will be cut off. Use **Vercel Pro** (this repo sets `maxDuration: 300` in `vercel.json` for `server.js`) or deploy on a **VPS / Railway / Render / Fly.io** for reliable large-file streaming.
 
-### Downloads: proxied (default) vs direct
+### Downloads: quality, redirects, and merge
 
-- **Default:** **`/api/download`** streams the file **through your server** with proper `Referer` / `User-Agent` headers to YouTube’s CDN. This is **reliable** for full-length MP4/MP3 files.
-- **Optional:** **`?direct=1`** returns a **302** to the CDN URL. Browsers often **fail** this (tiny/corrupt files, HTML error pages saved as `.mp4`) because cross-origin redirects do not send the same headers as a server-side fetch. Use **direct** only if you know your environment supports it; otherwise stay on the default proxy.
+- **Streaming uses axios** with **HTTP redirects followed** (Node’s raw `https` client does not follow redirects, which used to save tiny HTML/error bodies as “.mp4”).
+- **“Best merged (max quality + audio)”** (`format_id=__MERGE_BEST__`) combines the **best adaptive video** and **best adaptive audio** with **ffmpeg** (`-c copy`) so you get **4K/HDR-style** quality with audio when YouTube splits streams. Requires **ffmpeg** on the server (see `FFMPEG_PATH` or bundled **`ffmpeg-static`** from npm).
+- **Lower rows** are **progressive/muxed** MP4s (e.g. 360p, 720p) when the API exposes them.
+- **Optional:** **`?direct=1`** returns a **302** to the CDN URL. Often unreliable in browsers; prefer the default proxied stream.
 
 ### Option C — Railway / Render / Fly.io (recommended for large files)
 
@@ -136,6 +138,7 @@ and deploy the repo normally.
 | `RAPID_API_KEY`  | —         | RapidAPI key for `yt-api.p.rapidapi.com` (required for `/api/info` and `/api/download`) |
 | `YTDLP_PATH`     | `yt-dlp`  | Path to yt-dlp binary (optional; legacy docs) |
 | `MAX_DURATION`   | `10800`   | Max video duration in seconds (3 hours) |
+| `FFMPEG_PATH`    | (auto)    | Path to `ffmpeg` for merged downloads; otherwise **`ffmpeg-static`** from npm is used |
 
 ---
 
