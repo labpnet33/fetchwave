@@ -111,7 +111,12 @@ npm i -g vercel
 vercel --prod
 ```
 
-> **Note:** Vercel's free tier has a 10-second timeout. For large files, consider a VPS (Railway, Render, Fly.io) instead.
+> **Note:** Vercel **Hobby** enforces a **10-second** serverless limit — long downloads will be cut off. Use **Vercel Pro** (this repo sets `maxDuration: 300` in `vercel.json` for `server.js`) or deploy on a **VPS / Railway / Render / Fly.io** for reliable large-file streaming.
+
+### Downloads: direct vs proxied
+
+- By default the app requests **`/api/download?...&direct=1`**, which **302-redirects** the browser to YouTube’s CDN so the file does **not** stream through your server (faster, avoids double-hop limits).
+- If a browser blocks that redirect or you see **403** from `googlevideo`, use the **proxied** URL (same path **without** `direct=1`) so the server streams the file end-to-end (slower but compatible).
 
 ### Option C — Railway / Render / Fly.io (recommended for large files)
 
@@ -125,11 +130,12 @@ and deploy the repo normally.
 
 ## ⚙️ Environment Variables
 
-| Variable      | Default   | Description                                  |
-|---------------|-----------|----------------------------------------------|
-| `PORT`        | `3000`    | HTTP port for the Express server             |
-| `YTDLP_PATH`  | `yt-dlp`  | Path to yt-dlp binary                        |
-| `MAX_DURATION`| `10800`   | Max video duration in seconds (3 hours)      |
+| Variable         | Default   | Description |
+|------------------|-----------|-------------|
+| `PORT`           | `3000`    | HTTP port for the Express server |
+| `RAPID_API_KEY`  | —         | RapidAPI key for `yt-api.p.rapidapi.com` (required for `/api/info` and `/api/download`) |
+| `YTDLP_PATH`     | `yt-dlp`  | Path to yt-dlp binary (optional; legacy docs) |
+| `MAX_DURATION`   | `10800`   | Max video duration in seconds (3 hours) |
 
 ---
 

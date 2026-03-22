@@ -10,6 +10,7 @@
  */
 const axios = require('axios');
 const https = require('https');
+const { pipeline } = require('stream/promises');
 
 const RAPID_API_KEY  = process.env.RAPID_API_KEY || 'YOUR_KEY_HERE';
 const RAPID_API_HOST = 'yt-api.p.rapidapi.com';
@@ -572,9 +573,12 @@ async function info(req, res) {
 }
 
 async function download(req, res) {
-  const url      = req.query?.url;
+  const url = req.query?.url;
   const formatId = req.query?.format_id;
-  const format   = req.query?.format || 'mp4'; // 'mp4' or 'mp3'
+  const format = req.query?.format || 'mp4';
+  const direct =
+    req.query?.direct === '1' ||
+    req.query?.direct === 'true';
 
   if (!url || !formatId) {
     return res.status(400).json({ error: 'url and format_id are required.' });
@@ -587,52 +591,91 @@ async function download(req, res) {
     const response = await axios.get('https://yt-api.p.rapidapi.com/dl', {
       params: { id: videoId },
       headers: {
-        'x-rapidapi-key':  RAPID_API_KEY,
+        'x-rapidapi-key': RAPID_API_KEY,
         'x-rapidapi-host': RAPID_API_HOST,
       },
       timeout: 15000,
     });
 
-    const data       = response.data;
+    const data = response.data;
     const allFormats = [...(data.formats || []), ...(data.adaptiveFormats || [])];
-    const fmt        = allFormats.find(f => f.itag?.toString() === formatId);
+    const fmt = allFormats.find((f) => f.itag?.toString() === formatId);
 
     if (!fmt?.url) return res.status(404).json({ error: 'Format not found.' });
 
-    const title    = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
+    if (direct) {
+      return res.redirect(302, fmt.url);
+    }
+
+    const title = (data.title || 'video').replace(/[^a-z0-9]/gi, '_').slice(0, 60);
     const filename = format === 'mp3' ? `${title}.mp3` : `${title}.mp4`;
-    const contentType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
+    const fallbackType = format === 'mp3' ? 'audio/mpeg' : 'video/mp4';
 
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', contentType);
-    if (fmt.contentLength) res.setHeader('Content-Length', fmt.contentLength);
-
-    const options = {
+    const upstreamOptions = {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://www.youtube.com/'
-      }
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        Referer: 'https://www.youtube.com/',
+      },
     };
 
-    https.get(fmt.url, options, (stream) => {
-      if (stream.statusCode >= 400) {
-        if (!res.headersSent) res.status(stream.statusCode).end();
+    let incomingStream = null;
+
+    const upstreamReq = https.get(fmt.url, upstreamOptions, (incoming) => {
+      incomingStream = incoming;
+
+      if (incoming.statusCode >= 400) {
+        if (!res.headersSent) {
+          res.status(incoming.statusCode).json({ error: 'Upstream returned an error.' });
+        }
+        incoming.resume();
         return;
       }
-      stream.pipe(res);
-      stream.on('error', (err) => {
-        console.error('[/api/download] Stream error:', err.message);
-        res.end();
+
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+      const upstreamType = incoming.headers['content-type'];
+      if (upstreamType) {
+        res.setHeader('Content-Type', upstreamType);
+      } else {
+        res.setHeader('Content-Type', fallbackType);
+      }
+
+      const rawLen = incoming.headers['content-length'];
+      if (rawLen != null && String(rawLen).trim() !== '' && /^\d+$/.test(String(rawLen).trim())) {
+        res.setHeader('Content-Length', String(rawLen).trim());
+      } else if (
+        fmt.contentLength != null &&
+        /^\d+$/.test(String(fmt.contentLength).trim())
+      ) {
+        res.setHeader('Content-Length', String(fmt.contentLength).trim());
+      }
+
+      const cleanup = () => {
+        if (incomingStream && !incomingStream.destroyed) incomingStream.destroy();
+        if (!res.writableEnded) res.destroy();
+      };
+
+      req.once('aborted', cleanup);
+      req.once('close', cleanup);
+
+      pipeline(incoming, res).catch((err) => {
+        if (err && err.code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+          console.error('[/api/download] pipeline error:', err.message);
+        }
+        if (incoming && !incoming.destroyed) incoming.destroy();
+        if (!res.writableEnded && !res.headersSent) {
+          res.status(500).end();
+        } else if (!res.writableEnded) {
+          res.destroy();
+        }
       });
-    }).on('error', (err) => {
-      console.error('[/api/download] Request error:', err.message);
-      if (!res.headersSent) res.status(500).end();
     });
 
-    req.on('close', () => {
-      res.end();
+    upstreamReq.on('error', (err) => {
+      console.error('[/api/download] Upstream request error:', err.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Download failed.' });
     });
-
   } catch (err) {
     console.error('[/api/download] Catch error:', err.message);
     if (!res.headersSent) res.status(500).json({ error: 'Download failed.' });
