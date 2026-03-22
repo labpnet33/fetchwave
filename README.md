@@ -113,10 +113,10 @@ vercel --prod
 
 > **Note:** Vercel **Hobby** enforces a **10-second** serverless limit — long downloads will be cut off. Use **Vercel Pro** (this repo sets `maxDuration: 300` in `vercel.json` for `server.js`) or deploy on a **VPS / Railway / Render / Fly.io** for reliable large-file streaming.
 
-### Downloads: direct vs proxied
+### Downloads: proxied (default) vs direct
 
-- By default the app requests **`/api/download?...&direct=1`**, which **302-redirects** the browser to YouTube’s CDN so the file does **not** stream through your server (faster, avoids double-hop limits).
-- If a browser blocks that redirect or you see **403** from `googlevideo`, use the **proxied** URL (same path **without** `direct=1`) so the server streams the file end-to-end (slower but compatible).
+- **Default:** **`/api/download`** streams the file **through your server** with proper `Referer` / `User-Agent` headers to YouTube’s CDN. This is **reliable** for full-length MP4/MP3 files.
+- **Optional:** **`?direct=1`** returns a **302** to the CDN URL. Browsers often **fail** this (tiny/corrupt files, HTML error pages saved as `.mp4`) because cross-origin redirects do not send the same headers as a server-side fetch. Use **direct** only if you know your environment supports it; otherwise stay on the default proxy.
 
 ### Option C — Railway / Render / Fly.io (recommended for large files)
 

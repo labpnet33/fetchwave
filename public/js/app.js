@@ -368,7 +368,7 @@ async function handleDownload(e) {
   btn.innerHTML = `<span class="dl-btn-icon">⏳</span> Preparing…`;
 
   try {
-    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}&direct=1`;
+    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}`;
     
     const a = document.createElement('a');
     a.href = dlUrl;
@@ -386,7 +386,7 @@ async function handleDownload(e) {
     btn.disabled  = false;
     btn.innerHTML = origHTML;
     console.error('Download error:', err);
-    window.open(`/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}&direct=1`, '_blank');
+    window.open(`/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(formatId)}&format=${format}`, '_blank');
   }
 }
 
@@ -419,7 +419,7 @@ async function handlePlaylistVideoDownload(videoId, format) {
 
     if (!selectedFormat) throw new Error('No suitable format found');
 
-    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(selectedFormat.formatId)}&format=${format}&direct=1`;
+    const dlUrl = `/api/download?url=${encodeURIComponent(videoUrl)}&format_id=${encodeURIComponent(selectedFormat.formatId)}&format=${format}`;
     
     const a = document.createElement('a');
     a.href = dlUrl;

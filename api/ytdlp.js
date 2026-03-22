@@ -458,8 +458,10 @@ async function info(req, res) {
 
     const allFormats = [...combined, ...adaptive];
 
-    const allowedQualities = ['144p', '240p', '360p', '480p', '720p', '1080p', '1440p'];
-    const allowedHeights = new Set([144, 240, 360, 480, 720, 1080, 1440]);
+    const allowedQualities = [
+      '144p', '240p', '360p', '480p', '720p', '1080p', '1440p', '2160p', '4320p',
+    ];
+    const allowedHeights = new Set([144, 240, 360, 480, 720, 1080, 1440, 2160, 4320]);
 
     function isAllowedVideoRow(row) {
       if (row.ext !== 'mp4' || row.vcodec === 'none') return false;
@@ -501,7 +503,11 @@ async function info(req, res) {
       })
       .filter(isAllowedVideoRow);
 
-    const videoFormats = dedupeVideoFormatsByHeight(videoFormatsRaw).map(
+    // Prefer progressive/muxed MP4 (video+audio in one file). DASH video-only breaks "full video with audio".
+    const muxedRows = videoFormatsRaw.filter((r) => r.acodec !== 'none');
+    const forDedupe = muxedRows.length > 0 ? muxedRows : videoFormatsRaw;
+
+    const videoFormats = dedupeVideoFormatsByHeight(forDedupe).map(
       ({ height: _h, ...out }) => out,
     );
 
